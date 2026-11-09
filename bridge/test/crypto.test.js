@@ -10,19 +10,12 @@ import { deriveKeys, seal, open, loadOrCreateKey, OVERHEAD } from '../src/strip-
 import { decodeImage, renderCells, MAX_PAYLOAD } from '../src/codec.js';
 import { parseFrame } from '../src/bridge.js';
 import { luaAssignment } from '../src/luaser.js';
+import { hasLua } from './lua.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const has = (bin) => {
-  try {
-    execFileSync(bin, ['-v'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-};
 // LuaJIT's bit library returns signed numbers; tools/bitstub.lua (plain Lua 5.1)
 // returns unsigned ones like the game's. The addon must agree with Node under both.
-const LUAS = ['lua5.1', 'luajit'].filter(has);
+const LUAS = ['lua5.1', 'luajit'].filter(hasLua);
 
 function luaCrypto(lua, script) {
   const prelude = `dofile("tools/bitstub.lua") local ns = {} assert(loadfile("addon/T3Code/Core/Crypto.lua"))("T3Code", ns) local C = ns.Crypto
@@ -35,7 +28,8 @@ test('strip keys: one per install, kept private', () => {
   const a = loadOrCreateKey(dir);
   assert.equal(a.length, 32);
   assert.deepEqual(loadOrCreateKey(dir), a);
-  assert.equal(fs.statSync(path.join(dir, 'strip.key')).mode & 0o777, 0o600);
+  // Windows has no POSIX modes; owner-only access there comes from ACLs.
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'strip.key')).mode & 0o777, 0o600);
   assert.equal(deriveKeys(a).hex.length, 128);
 });
 

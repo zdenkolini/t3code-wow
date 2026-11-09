@@ -11,6 +11,9 @@ import { markdownToWow, markdownToSpeech } from '../src/format.js';
 import { RS, US } from '../src/codec.js';
 import { seal } from '../src/strip-crypto.js';
 import crypto from 'node:crypto';
+import { anyLua, NO_LUA } from './lua.js';
+
+const lua = anyLua();
 
 let currentKeys = null; // the latest fakeBridge's strip keys: frame() seals with them
 
@@ -42,7 +45,7 @@ function fakeBridge(slots = 8) {
 
 function loadSlot(dir, i) {
   const file = path.join(dir, `T3Code_S${String(i).padStart(3, '0')}`, 'Inbox.lua');
-  const out = execFileSync('lua5.1', ['-e', `dofile(${JSON.stringify(file)}) print(T3Code_Inbox and T3Code_Inbox.gen or "nil", T3Code_Inbox and T3Code_Inbox.nextSig or "nil", T3Code_Inbox and T3Code_Inbox.threads and T3Code_Inbox.threads[1] and T3Code_Inbox.threads[1].title or "")`]);
+  const out = execFileSync(lua, ['-e', `dofile(${JSON.stringify(file)}) print(T3Code_Inbox and T3Code_Inbox.gen or "nil", T3Code_Inbox and T3Code_Inbox.nextSig or "nil", T3Code_Inbox and T3Code_Inbox.threads and T3Code_Inbox.threads[1] and T3Code_Inbox.threads[1].title or "")`]);
   const [gen, nextSig, title] = out.toString().trim().split('\t');
   return { gen: Number(gen), nextSig: Number(nextSig), title };
 }
@@ -99,7 +102,7 @@ test('parseFrame reads hello and commands', () => {
   assert.deepEqual(f.commands[0], { id: 3, verb: 'send', args: ['tid', 'hi there'] });
 });
 
-test('publish writes the next slots and bootstrap slots, then raises one signal', () => {
+test('publish writes the next slots and bootstrap slots, then raises one signal', { skip: !lua && NO_LUA }, () => {
   const { b, dir } = fakeBridge();
   b.onFrame(frame(1, [['H', 1, 'sess', 'ui1', 2, 1, 0, 'o', '', '0.1.0']]));
   assert.ok(b.publishNow());
@@ -147,7 +150,7 @@ test('a reload (new ui token) resets the slot pointer; stale beacons do not', ()
   b.stop();
 });
 
-test('an addon waiting on a stale signal gets that signal raised too', () => {
+test('an addon waiting on a stale signal gets that signal raised too', { skip: !lua && NO_LUA }, () => {
   const { b, dir } = fakeBridge();
   b.persist.sigCounter = 9;
   b.onFrame(frame(1, [['H', 1, 'sess', 'ui1', 2, 4, 0, 'o', '', '0.1.0']]));
@@ -172,7 +175,7 @@ test('signals are never skipped, and never rung ahead of our counter', () => {
   b.stop();
 });
 
-test('a drifted slot prediction still covers the slot the addon will load', () => {
+test('a drifted slot prediction still covers the slot the addon will load', { skip: !lua && NO_LUA }, () => {
   const { b, dir } = fakeBridge(120);
   b.onFrame(frame(1, [['H', 1, 'sess', 'ui1', 40, 5, 0, 'o', '', '0.1.0']]));
   b.client.slotNext = 101; // we kept predicting while the game didn't load anything
@@ -215,11 +218,11 @@ test('activity labels and pending questions', () => {
   assert.equal(p.questions[0].opts[0].v, 'X');
 });
 
-test('lua serializer escapes strings and keeps utf-8', () => {
+test('lua serializer escapes strings and keeps utf-8', { skip: !lua && NO_LUA }, () => {
   const s = luaValue({ a: 'x"y\\z\n\u0001', b: ['é', 1.5, true], 'not ident': 1, end: 2 });
   const file = path.join(os.tmpdir(), `t3wow-ser-${process.pid}.lua`);
   fs.writeFileSync(file, Buffer.from(`local t = ${s}; io.write(t.a, "|", t.b[1], "|", t["not ident"], "|", t["end"])`, 'latin1'));
-  const out = execFileSync('lua5.1', [file]);
+  const out = execFileSync(lua, [file]);
   fs.rmSync(file);
   assert.equal(out.toString('utf8'), 'x"y\\z\n\u0001|é|1|2');
 });

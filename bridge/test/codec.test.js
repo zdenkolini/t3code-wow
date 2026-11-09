@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { anyLua, NO_LUA } from './lua.js';
 import { encodeFrame, decodeImage, renderCells, cellsToBytes, bytesToCells, MAX_PAYLOAD, parsePPM, parseBMP } from '../src/codec.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const lua = ['lua5.1', 'luajit', 'lua'].find((bin) => {
-  try { execFileSync('which', [bin], { stdio: 'ignore' }); return true; } catch { return false; }
-});
+const lua = anyLua();
 
 function luaCells(seq, payloadHex) {
   const script = `
@@ -59,7 +58,7 @@ test('max payload fits', () => {
   assert.throws(() => encodeFrame(9, payload + 'y'));
 });
 
-test('Lua encoder matches JS encoder', { skip: !lua && 'no lua interpreter' }, () => {
+test('Lua encoder matches JS encoder', { skip: !lua && NO_LUA }, () => {
   const payload = Buffer.from('C\x1f7\x1fsend\x1fabc\x1fünïcödé | text', 'utf8');
   const fromLua = luaCells(65537, payload.toString('hex'));
   const fromJs = encodeFrame(1, payload);

@@ -7,6 +7,7 @@ import path from 'node:path';
 // Fake home with Wine prefixes, set before wow.js reads it.
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-home-'));
 process.env.HOME = home;
+process.env.USERPROFILE = home; // os.homedir() reads this on Windows
 delete process.env.WINEPREFIX;
 const { findWowInstalls: findAny, parseMacProcesses } = await import('../src/wow.js');
 const findWowInstalls = () => findAny({ platform: 'linux' });
@@ -30,7 +31,8 @@ test("finds Forever in Omarchy's Battle.net prefix", () => {
   assert.deepEqual(findWowInstalls().forever, [path.join(omarchy(), 'drive_c/Program Files (x86)/World of Warcraft/_forever_')]);
 });
 
-test("finds a custom install folder from Battle.net's records, including another drive", () => {
+// Wine's dosdevices/d: link can't exist on Windows: a colon isn't allowed in a file name.
+test("finds a custom install folder from Battle.net's records, including another drive", { skip: process.platform === 'win32' && 'Wine drive links need a POSIX file system' }, () => {
   reset();
   touch(path.join(omarchy(), 'drive_c/ProgramData/Battle.net/Agent/product.db'),
     'junk\x00\x12(C:/Games/World of Warcraft\x00wowf\x00\x12"D:\\Blizzard\\World of Warcraft"');

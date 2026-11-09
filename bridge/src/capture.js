@@ -157,7 +157,7 @@ export function pickMacWindow(info, pid) {
 }
 
 export const SCREEN_PERMISSION_HELP =
-  `macOS hasn't let the bridge record the screen. Open System Settings > Privacy & Security > Screen & System Audio Recording, turn on ${path.basename(process.execPath)} (${process.execPath}), then restart the bridge with: launchctl kickstart -k gui/${process.getuid()}/t3code-wow`;
+  `macOS hasn't let the bridge record the screen. Open System Settings > Privacy & Security > Screen & System Audio Recording, turn on ${path.basename(process.execPath)} (${process.execPath}), then restart the bridge with: launchctl kickstart -k gui/${process.getuid?.()}/t3code-wow`;
 
 // ---------------------------------------------------------------------------
 
