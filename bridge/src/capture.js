@@ -186,6 +186,7 @@ export function pickWindowsWindow(info, pid) {
 // request per stdin line with one stdout line, "ok <data>" or "err <message>":
 //   windows <pid>           JSON window list for pickWindowsWindow
 //   grab <x> <y> <w> <h>    base64 BMP of that screen rectangle (physical pixels)
+//   shot <x> <y> <w> <h> <outW> <outH>   base64 JPEG, scaled to outW x outH
 // The thread is per-monitor DPI aware, so every coordinate is in physical pixels, across
 // all monitors and scale factors.
 const WIN_HELPER_CS = String.raw`
@@ -193,6 +194,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
@@ -263,6 +265,21 @@ public static class T3Strip {
     }
   }
 
+  static string Shot(int x, int y, int w, int h, int ow, int oh) {
+    using (var bmp = Copy(x, y, w, h)) using (var outBmp = new Bitmap(ow, oh, PixelFormat.Format24bppRgb)) using (var ms = new MemoryStream()) {
+      using (var g = Graphics.FromImage(outBmp)) {
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.DrawImage(bmp, 0, 0, ow, oh);
+      }
+      ImageCodecInfo jpeg = null;
+      foreach (var c in ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
+      var ps = new EncoderParameters(1);
+      ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
+      outBmp.Save(ms, jpeg, ps);
+      return Convert.ToBase64String(ms.ToArray());
+    }
+  }
+
   public static void Serve() {
     SetThreadDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
     var input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
@@ -277,6 +294,7 @@ public static class T3Strip {
         Func<int, int> n = i => int.Parse(a[i]);
         if (a[0] == "windows") reply = Windows(uint.Parse(a[1]));
         else if (a[0] == "grab") reply = Grab(n(1), n(2), n(3), n(4));
+        else if (a[0] == "shot") reply = Shot(n(1), n(2), n(3), n(4), n(5), n(6));
         else throw new Exception("unknown request " + a[0]);
         reply = "ok " + reply;
       } catch (Exception e) {
@@ -382,6 +400,10 @@ class WinHelper {
 
   async grab(x, y, w, h) {
     return Buffer.from(await this.request(`grab ${x} ${y} ${w} ${h}`), 'base64');
+  }
+
+  async shot(x, y, w, h, ow, oh) {
+    return Buffer.from(await this.request(`shot ${x} ${y} ${w} ${h} ${ow} ${oh}`, 8000), 'base64');
   }
 
   close() {
@@ -597,6 +619,16 @@ export class StripCapture {
         } catch {}
         fs.rmSync(file, { force: true });
       }
+      return { data, name, mime: 'image/jpeg' };
+    }
+    if (backend === 'windows') {
+      const win = await this.winWindow(wowPid);
+      if (!win.found) throw new Error("the game window isn't open");
+      if (!win.visible) throw new Error("the game window isn't on screen");
+      // Keep high-DPI captures at the logical size, as on macOS.
+      const ow = Math.round(win.width / win.scale);
+      const oh = Math.round(win.height / win.scale);
+      const data = await this.winHelper().shot(win.x, win.y, win.width, win.height, ow, oh);
       return { data, name, mime: 'image/jpeg' };
     }
     if (backend === 'hyprland' || backend === 'grim') {
