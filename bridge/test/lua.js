@@ -14,4 +14,7 @@ export function hasLua(bin) {
 // The first interpreter found, in order of preference, or undefined.
 export const anyLua = () => ['lua5.1', 'luajit', 'lua'].find(hasLua);
 
+// Only interpreters with the game's Lua 5.1 semantics, for tests that load addon files.
+export const lua51 = () => ['lua5.1', 'luajit'].find(hasLua);
+
 export const NO_LUA = 'no lua interpreter';
