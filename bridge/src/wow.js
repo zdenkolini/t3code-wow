@@ -167,7 +167,7 @@ function winInstalls({ system, env = process.env, registry = readRegistry } = {}
     if (base) add(winPath(system, `${base}/World of Warcraft`));
   } catch {}
   for (const [key, name] of [[`${UNINSTALL}\\World of Warcraft`, 'InstallLocation'], ['HKLM\\SOFTWARE\\WOW6432Node\\Blizzard Entertainment\\World of Warcraft', 'InstallPath']]) {
-    const p = registry(key, name) && winPath(system, registry(key, name));
+    const p = winPath(system, registry(key, name) || '');
     // InstallPath can name the flavor folder (…\World of Warcraft\_retail_\).
     if (p) add(/^_[a-z]+_$/i.test(path.basename(p)) ? path.dirname(p) : p);
   }
@@ -269,16 +269,19 @@ export function parseWindowsProcesses(text) {
 
 // "<pid>","<pid>"… of running Wow.exe processes from `tasklist /fo csv /nh` (whose
 // "no tasks" line is localized, so only matching rows count).
-function parseTasklist(text) {
+export function parseTasklist(text) {
   return [...text.matchAll(/^"Wow\.exe","(\d+)"/gim)].map((m) => Number(m[1]));
 }
 
-const WIN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -Name Wow -ErrorAction SilentlyContinue | ForEach-Object { ($_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds(), $_.Path) -join [char]9 }";
+// A client we may not inspect (one run as administrator) has no start time, and
+// reading it throws; skip it rather than lose the whole listing.
+const WIN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -Name Wow -ErrorAction SilentlyContinue | ForEach-Object { try { ($_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds(), $_.Path) -join [char]9 } catch {} }";
 let winProcCache = { pids: null, proc: null };
 
 // tasklist takes ~0.1 s; PowerShell, which can tell Forever from Retail by path and
 // knows the start time, takes ~0.3 s or more. The bridge checks every few seconds,
-// so PowerShell only runs when the set of Wow.exe processes changes.
+// so PowerShell only runs when the set of Wow.exe processes changes. A restarted
+// client is a new pid set, because the game takes longer than one check to start.
 function findWindowsProcess() {
   const sys32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
   const tl = spawnSync(path.join(sys32, 'tasklist.exe'), ['/fi', 'IMAGENAME eq Wow.exe', '/fo', 'csv', '/nh'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
@@ -287,7 +290,7 @@ function findWindowsProcess() {
   if (!pids) return (winProcCache = { pids, proc: null }).proc;
   if (pids === winProcCache.pids) return winProcCache.proc;
   const ps = spawnSync(path.join(sys32, 'WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', WIN_PS], { encoding: 'utf8', timeout: 15000, windowsHide: true });
-  if (ps.status !== 0) return null;
+  if (ps.error) return null;
   return (winProcCache = { pids, proc: parseWindowsProcesses(ps.stdout) }).proc;
 }
 

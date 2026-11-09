@@ -9,7 +9,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads this on Windows
 delete process.env.WINEPREFIX;
-const { findWowInstalls: findAny, foreverFolder, parseMacProcesses, parseWindowsProcesses } = await import('../src/wow.js');
+const { findWowInstalls: findAny, foreverFolder, parseMacProcesses, parseWindowsProcesses, parseTasklist } = await import('../src/wow.js');
 const findWowInstalls = () => findAny({ platform: 'linux' });
 
 function touch(p, content = '') {
@@ -150,4 +150,8 @@ test('picks the Forever client out of the Windows process listing', () => {
   assert.deepEqual(parseWindowsProcesses(list), { pid: 28396, startTicks: 1794251390399 });
   assert.equal(parseWindowsProcesses(list.split('\r\n').slice(0, 2).join('\r\n')), null);
   assert.equal(parseWindowsProcesses(''), null);
+
+  // tasklist's rows, and its localized "no tasks" line.
+  assert.deepEqual(parseTasklist('"Wow.exe","28396","Console","4","2.698.732 K"\r\n"Wow.exe","9000","Console","4","1.000 K"\r\n'), [28396, 9000]);
+  assert.deepEqual(parseTasklist('INFORMACIJE: Nema pokrenutih zadataka.\r\n'), []);
 });
