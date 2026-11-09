@@ -154,7 +154,7 @@ const systemd = {
     return quiet('systemctl', ['--user', 'restart', this.name]);
   },
   restart() {
-    quiet('systemctl', ['--user', 'restart', this.name]);
+    return quiet('systemctl', ['--user', 'restart', this.name]);
   },
   remove() {
     quiet('systemctl', ['--user', 'disable', '--now', this.name], { warn: false });
@@ -201,7 +201,7 @@ const launchd = {
     return quiet('launchctl', ['bootstrap', this.target(), this.file]);
   },
   restart() {
-    quiet('launchctl', ['kickstart', '-k', `${this.target()}/${this.name}`]);
+    return quiet('launchctl', ['kickstart', '-k', `${this.target()}/${this.name}`]);
   },
   remove() {
     quiet('launchctl', ['bootout', `${this.target()}/${this.name}`], { warn: false });
@@ -392,12 +392,15 @@ function ago(ms) {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
 }
 
-function cmdStatus(args) {
+async function cmdStatus(args) {
+  // On Windows, whether the startup app and its supervisor are up (systemd and launchd say this themselves).
+  const autostart = !args.json && service.describe ? `  ${await service.describe()}` : null;
   let st;
   try {
     st = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'status.json'), 'utf8'));
   } catch {
     console.log(C.r('The bridge has not run yet.'), 'Start it with `t3code-wow install` or `t3code-wow run`.');
+    if (autostart) console.log(autostart);
     process.exitCode = 1;
     return;
   }
@@ -406,6 +409,7 @@ function cmdStatus(args) {
   const alive = age < 10000;
   const ok = (b) => (b ? C.g('●') : C.r('●'));
   console.log(`${ok(alive)} Bridge ${st.version} ${alive ? `running (pid ${st.pid})` : `not running (last seen ${ago(age)})`}`);
+  if (autostart) console.log(autostart);
   console.log(`${ok(st.t3.state === 'connected')} T3 Code: ${st.t3.state}${st.t3.error ? ` — ${st.t3.error}` : ''} ${C.d(`(${st.t3.threads} threads, ${st.t3.origin || '?'})`)}`);
   console.log(`${ok(!!st.wow)} WoW: ${st.wow ? `running (pid ${st.wow.pid})` : 'not running'}`);
   console.log(`${ok(st.capture.state === 'ok' || st.capture.state === 'idle')} Screen link: ${st.capture.state} via ${st.capture.backend} ${C.d(`(${st.capture.decoded} frames read, ${st.capture.rejected} rejected)`)}${st.capture.lastError ? `\n    ${C.y(st.capture.lastError)}` : ''}`);
@@ -468,8 +472,8 @@ async function cmdUninstall(args) {
   const warn = (msg) => console.log(`${C.y('!')} ${msg}`);
 
   if (service.installed()) {
-    await service.remove();
-    done('Stopped and removed the bridge service');
+    if ((await service.remove()) === false) warn('Removed the bridge service, but the running bridge didn\'t stop (see above)');
+    else done('Stopped and removed the bridge service');
   }
 
   let wowDir = wowFlag(args) ? foreverFolder(path.resolve(String(wowFlag(args)))) : cfg.wowDir;
