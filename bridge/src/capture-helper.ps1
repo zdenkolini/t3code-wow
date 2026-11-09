@@ -3,7 +3,8 @@
 # It reads the game window's position and copies small parts of the screen, so the
 # bridge can read the addon's pixel strip. It reads only: it never moves, focuses or
 # sends input to any window. The bridge starts it hidden with
-#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File capture-helper.ps1
+#   powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass
+#     -OutputFormat Text -File capture-helper.ps1 -WindowClass <the game's window class>
 # and it exits when its stdin closes (that is, with the bridge).
 #
 # Add-Type compiles the C# below with the compiler that ships with Windows' .NET
@@ -17,6 +18,11 @@
 #   <n> shot <x> <y> <w> <h> <outW> <outH>   base64 JPEG, scaled to outW x outH
 # The thread is per-monitor DPI aware, so every coordinate is in physical pixels, across
 # all monitors and scale factors.
+
+param(
+  # The class of Forever's game window, which finds it when the pid isn't known.
+  [Parameter(Mandatory = $true)] [string] $WindowClass
+)
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -36,9 +42,7 @@ public static class T3Strip {
   [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
   const int DWMWA_CLOAKED = 14, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
   const uint MONITOR_DEFAULTTONEAREST = 2;
-  // The class of Forever's game window (WOW_WINDOW_CLASS in capture.js), which finds it
-  // when the pid isn't known.
-  const string WOW_WINDOW_CLASS = "waApplication Window";
+  static string gameClass;
   static readonly IntPtr PER_MONITOR_AWARE_V2 = new IntPtr(-4);
   delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
   [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
@@ -68,7 +72,7 @@ public static class T3Strip {
       GetWindowThreadProcessId(h, out pid);
       var cls = new StringBuilder(256);
       GetClassName(h, cls, cls.Capacity);
-      if (pid != wanted && cls.ToString() != WOW_WINDOW_CLASS) return true;
+      if (pid != wanted && cls.ToString() != gameClass) return true;
       RECT rc; GetClientRect(h, out rc);
       var origin = new POINT(); ClientToScreen(h, ref origin);
       int cloaked; if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4) != 0) cloaked = 0;
@@ -119,7 +123,8 @@ public static class T3Strip {
     }
   }
 
-  public static void Serve() {
+  public static void Serve(string windowClass) {
+    gameClass = windowClass;
     SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
     var input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
     var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
@@ -147,4 +152,4 @@ public static class T3Strip {
 }
 '@
 
-[T3Strip]::Serve()
+[T3Strip]::Serve($WindowClass)

@@ -103,8 +103,15 @@ test('Windows helper: replies go to the request with their number, and stray lin
   fake.say(`${ida} err Access is denied.`);
   assert.equal(await b, 'bbbb');
   await assert.rejects(a, /Access is denied\./);
-  assert.equal(logged.length, 1);
+  // A second answer to a request that's already answered has nothing to resolve.
+  const c = helper.request('windows 6');
+  await tick();
+  fake.say(`${idb} ok late`);
+  fake.say(`${fake.lines[2].split(' ')[0]} ok cccc`);
+  assert.equal(await c, 'cccc');
+  assert.equal(logged.length, 2);
   assert.match(logged[0], /WARNING: something PowerShell printed/);
+  assert.match(logged[1], /ok late/);
 });
 
 test('Windows helper: starts the script file that ships next to capture.js', async () => {

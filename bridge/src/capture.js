@@ -162,7 +162,7 @@ export function pickMacWindow(info, pid) {
 // Windows: a long-lived PowerShell process running capture-helper.ps1 (C# over GDI), see WinHelper below.
 
 // The class of Forever's game window, which finds it when the pid isn't known. The
-// helper script has its own copy.
+// helper gets it as an argument.
 const WOW_WINDOW_CLASS = 'waApplication Window';
 
 // The game window from the helper's window list. Client areas are in physical pixels
@@ -193,10 +193,9 @@ const WIN_HELPER_SCRIPT = fileURLToPath(new URL('./capture-helper.ps1', import.m
 // Requests are numbered and each reply carries its request's number, so a stray line
 // (a PowerShell warning, say) is logged and dropped instead of answering the wrong request.
 export class WinHelper {
-  constructor({ spawn: spawnProc = spawn, log = () => {}, script = WIN_HELPER_SCRIPT } = {}) {
+  constructor({ spawn: spawnProc = spawn, log = () => {} } = {}) {
     this.spawn = spawnProc;
     this.log = log;
-    this.script = script;
     this.proc = null;
     this.pending = new Map(); // request number -> { resolve, reject }
     this.next = 1;
@@ -211,7 +210,7 @@ export class WinHelper {
   start() {
     const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     // Bypass applies to this process only; the default policy would refuse any script file.
-    const proc = this.spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-File', this.script], {
+    const proc = this.spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-File', WIN_HELPER_SCRIPT, '-WindowClass', WOW_WINDOW_CLASS], {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
