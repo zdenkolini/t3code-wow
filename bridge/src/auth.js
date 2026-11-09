@@ -1,10 +1,11 @@
 // The bridge's T3 session token. Minted with the user's own `t3` CLI, stored owner-only
 // under ~/.config/t3code-wow, renewed a week before it expires.
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { writeSecret } from './secret-file.js';
 
 export const CONFIG_DIR = path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 't3code-wow');
 export const TOKEN_FILE = path.join(CONFIG_DIR, 'token');
@@ -78,31 +79,14 @@ export async function mintToken({ label = 'WoW bridge' } = {}) {
   const token = stdout.split('\n').map((s) => s.trim()).filter(Boolean).pop();
   if (!token || !tokenClaims(token)) throw new Error('t3 auth session issue printed no token');
   fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-  // Lock the new token down before it replaces the old one, so a failure keeps the old token.
-  const tmp = `${TOKEN_FILE}.new`;
+  // If it can't be saved the old token stays in place, so revoke the session nobody will use.
   try {
-    fs.writeFileSync(tmp, token, { mode: 0o600 });
-    ownerOnly(tmp);
-    await replace(tmp, TOKEN_FILE);
+    await writeSecret(TOKEN_FILE, token);
   } catch (e) {
-    fs.rmSync(tmp, { force: true });
     revokeSession(tokenClaims(token).sid, cli);
     throw e;
   }
   return token;
-}
-
-// Windows refuses to replace a file someone has open (a virus scan, a CLI reading the token),
-// so give them a moment before giving up.
-async function replace(from, to) {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return fs.renameSync(from, to);
-    } catch (e) {
-      if (attempt >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
-      await new Promise((r) => setTimeout(r, 100 * attempt));
-    }
-  }
 }
 
 // Best effort; resolves to whether the session is gone.
@@ -127,22 +111,6 @@ export function t3Command(cli, args, { platform = process.platform, comspec = pr
   if (unsafe) throw new Error(`can't pass ${JSON.stringify(unsafe)} to ${path.basename(cli)} safely`);
   const line = [cli, ...args].map((a) => `"${a}"`).join(' ');
   return [comspec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { windowsHide: true, windowsVerbatimArguments: true }];
-}
-
-// POSIX modes don't apply on Windows: drop inherited access and grant only the current account,
-// named by its SID so a renamed account or an odd USERNAME can't point it elsewhere.
-function ownerOnly(file) {
-  if (process.platform !== 'win32') return;
-  const opts = { encoding: 'utf8', windowsHide: true, timeout: 15000 };
-  // Full paths: Git for Windows puts its own whoami ahead of the system one on PATH.
-  const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-  const sid = execFileSync(path.join(system32, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], opts).match(/S-1-[\d-]+/)?.[0];
-  if (!sid) throw new Error(`could not limit ${file} to the current user: whoami printed no SID`);
-  try {
-    execFileSync(path.join(system32, 'icacls.exe'), [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { ...opts, stdio: 'pipe' });
-  } catch (e) {
-    throw new Error(`could not limit ${file} to the current user: ${(e.stderr || e.stdout || e.message).trim()}`);
-  }
 }
 
 export function readToken() {
