@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_DIR } from './auth.js';
+import { writeSecret } from './secret-file.js';
 
 const ENV_DIR = path.join(CONFIG_DIR, 'envs');
 const RENEW_BEFORE_MS = 7 * 24 * 3600 * 1000;
@@ -78,9 +79,9 @@ export function tokenFile(envId) {
   return path.join(ENV_DIR, `${envId}.json`);
 }
 
-export function saveToken(envId, data) {
+export async function saveToken(envId, data) {
   fs.mkdirSync(ENV_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(tokenFile(envId), JSON.stringify(data), { mode: 0o600 });
+  await writeSecret(tokenFile(envId), JSON.stringify(data));
 }
 
 export function readTokenData(envId) {
@@ -106,8 +107,8 @@ export function remoteTokenProvider(env, { log = () => {}, label } = {}) {
       if (!minting) {
         log(`${env.label}: ${data?.token ? 'renewing' : 'minting'} its T3 session token over SSH`);
         minting = mintRemote(env.ssh, label)
-          .then((fresh) => {
-            saveToken(env.id, fresh);
+          .then(async (fresh) => {
+            await saveToken(env.id, fresh);
             return fresh;
           })
           .finally(() => {

@@ -550,7 +550,7 @@ async function cmdEnv(args) {
     console.log(`${C.g('✓')} Found ${C.b(ident.label)} (${ident.platform?.machine || 'machine'}, T3 Code ${ident.serverVersion}) at ${good.join(', ')}`);
     process.stdout.write(`… Creating a T3 Code session on ${ident.label} over SSH (${ssh})\r`);
     const tok = await mintRemote(ssh, `WoW bridge (${local.label || os.hostname()})`);
-    saveToken(ident.environmentId, tok);
+    await saveToken(ident.environmentId, tok);
     console.log(`${C.g('✓')} Session created on ${ident.label} ${C.d(`(revoke with t3code-wow env remove ${ident.label})`)}`);
     const existing = cfg.environments.find((e) => e.id === ident.environmentId);
     const used = new Set(cfg.environments.map((e) => e.code));
