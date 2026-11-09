@@ -1,9 +1,9 @@
 // The bridge's autostart on Windows: a per-user "Run" entry that starts a small
 // supervisor at logon, which runs the bridge and starts it again when it exits.
 //
-// Why not a Scheduled Task: Task Scheduler refuses to register tasks from a
-// non-elevated administrator ("Access is denied"), which is how most people use
-// Windows, so every install, update and uninstall would need a UAC prompt. A Windows
+// Why not a Scheduled Task: on the Windows 11 PC this was built on, Task Scheduler refused
+// to register any task from a non-elevated administrator ("Access is denied"), so every
+// install, update and uninstall could need a UAC prompt; a Run entry never does. A Windows
 // service runs in session 0 and can't see the game window. The Run entry needs no
 // elevation and starts in the desktop session; the supervisor does the restarting,
 // like systemd's Restart=always or launchd's KeepAlive.
@@ -98,10 +98,20 @@ export async function supervise({ node = process.execPath, script, args = ['run'
   await listen(server, stateDir);
 
   const logFile = path.join(stateDir, 'bridge.log');
-  try {
-    if (fs.statSync(logFile).size > LOG_LIMIT) fs.renameSync(logFile, `${logFile}.old`);
-  } catch {}
-  const out = fs.openSync(logFile, 'a');
+  let out = null;
+  // Checked before every start, so a supervisor that runs for weeks (or a crash loop) can't
+  // grow the log without limit.
+  const openLog = () => {
+    try {
+      if (fs.statSync(logFile).size > LOG_LIMIT) {
+        if (out !== null) fs.closeSync(out);
+        out = null;
+        fs.renameSync(logFile, `${logFile}.old`);
+      }
+    } catch {}
+    if (out === null) out = fs.openSync(logFile, 'a');
+  };
+  openLog();
   const note = (msg) => fs.writeSync(out, `${new Date().toISOString()} supervisor: ${msg}\n`);
 
   const since = Date.now();
@@ -121,6 +131,7 @@ export async function supervise({ node = process.execPath, script, args = ['run'
     };
     const start = () => {
       timer = null;
+      openLog();
       let exited = false;
       const proc = spawn(node, [script, ...args], { stdio: ['ignore', out, out, 'ipc'], windowsHide: true });
       child = proc;
@@ -177,7 +188,14 @@ export function windowsAutostart({ name = 't3code-wow', script, stateDir, node =
   // quits at once on the NUL handles Node passes, so let cmd's `start` launch it with
   // no std handles, as Explorer does.
   const launch = async () => {
-    spawnSync(path.join(system, 'cmd.exe'), ['/d', '/s', '/c', `"start "" ${command}"`], { cwd: path.dirname(script), stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
+    if (!fs.existsSync(node)) {
+      process.stderr.write(`Node isn't at ${node} any more. Run the install command again to record the current one.\n`);
+      return false;
+    }
+    // The state folder, not the bridge's: Windows won't delete a folder a running process
+    // has as its working directory, and updating replaces the bridge's folder.
+    fs.mkdirSync(stateDir, { recursive: true });
+    spawnSync(path.join(system, 'cmd.exe'), ['/d', '/s', '/c', `"start "" ${command}"`], { cwd: stateDir, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
     for (let i = 0; i < 50; i++) {
       if (await askSupervisor(stateDir, 'status', 1000)) return true;
       await sleep(100);

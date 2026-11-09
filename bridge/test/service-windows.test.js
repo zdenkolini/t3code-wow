@@ -45,9 +45,10 @@ async function until(check, ms = 20000) {
   }
 }
 
-test('autostart records the real node binary, not a version manager\'s per-shell link', () => {
+test('autostart records the real node binary, not a version manager\'s per-shell link', (t) => {
   // fnm puts node on PATH through a per-shell folder link that it deletes when the shell exits.
   const root = tmp();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const real = path.join(root, 'fnm', 'node-versions', 'v22.23.4', 'installation');
   fs.mkdirSync(real, { recursive: true });
   fs.writeFileSync(path.join(real, 'node.exe'), '');
