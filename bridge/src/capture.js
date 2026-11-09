@@ -160,15 +160,15 @@ export function pickMacWindow(info, pid) {
 // ---------------------------------------------------------------------------
 // Windows: a long-lived PowerShell process hosting inline C# (GDI), see WinHelper below.
 
-// The game's window classes: Forever's, and the older clients'.
-const WOW_WINDOW_CLASSES = ['waApplication Window', 'GxWindowClass'];
+// The class of Forever's game window, which finds it when the pid isn't known.
+const WOW_WINDOW_CLASS = 'waApplication Window';
 
 // The game window from the helper's window list. Client areas are in physical pixels
 // (the helper is per-monitor DPI aware), so the strip needs no scaling.
 export function pickWindowsWindow(info, pid) {
   // A minimized window has no client area, so only drop small windows that aren't minimized.
   const big = (w) => w.iconic || (w.client.width > 100 && w.client.height > 100);
-  const game = info.windows.filter((w) => !w.tool && big(w) && (w.pid === pid || WOW_WINDOW_CLASSES.includes(w.cls)));
+  const game = info.windows.filter((w) => !w.tool && big(w) && (w.pid === pid || w.cls === WOW_WINDOW_CLASS));
   const mine = game.filter((w) => w.pid === pid);
   const pool = mine.length ? mine : game;
   const shown = (w) => w.visible && !w.iconic && !w.cloaked;
@@ -202,6 +202,9 @@ public static class T3Strip {
   [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
   [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+  const int DWMWA_CLOAKED = 14, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
+  const uint MONITOR_DEFAULTTONEAREST = 2;
+  static readonly IntPtr PER_MONITOR_AWARE_V2 = new IntPtr(-4);
   delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
   [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
   [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
@@ -221,7 +224,7 @@ public static class T3Strip {
     return "{\"x\":" + x + ",\"y\":" + y + ",\"width\":" + w + ",\"height\":" + h + "}";
   }
 
-  // Top-level windows owned by pid, or with one of WOW_WINDOW_CLASSES.
+  // Top-level windows owned by pid, or with the game's window class.
   static string Windows(uint wanted) {
     var json = new StringBuilder("{\"windows\":[");
     bool first = true;
@@ -230,12 +233,12 @@ public static class T3Strip {
       GetWindowThreadProcessId(h, out pid);
       var cls = new StringBuilder(256);
       GetClassName(h, cls, cls.Capacity);
-      if (pid != wanted && cls.ToString() != "waApplication Window" && cls.ToString() != "GxWindowClass") return true;
+      if (pid != wanted && cls.ToString() != "${WOW_WINDOW_CLASS}") return true;
       RECT rc; GetClientRect(h, out rc);
       var origin = new POINT(); ClientToScreen(h, ref origin);
-      int cloaked; if (DwmGetWindowAttribute(h, 14, out cloaked, 4) != 0) cloaked = 0;
+      int cloaked; if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4) != 0) cloaked = 0;
       var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(mi);
-      GetMonitorInfo(MonitorFromWindow(h, 2), ref mi);
+      GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), ref mi);
       var m = mi.rcMonitor;
       if (!first) json.Append(',');
       first = false;
@@ -243,7 +246,7 @@ public static class T3Strip {
       json.Append(",\"visible\":" + (IsWindowVisible(h) ? "true" : "false"));
       json.Append(",\"iconic\":" + (IsIconic(h) ? "true" : "false"));
       json.Append(",\"cloaked\":" + (cloaked != 0 ? "true" : "false"));
-      json.Append(",\"tool\":" + ((GetWindowLong(h, -20) & 0x80) != 0 ? "true" : "false"));
+      json.Append(",\"tool\":" + ((GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0 ? "true" : "false"));
       json.Append(",\"dpi\":" + GetDpiForWindow(h));
       json.Append(",\"client\":" + Rect(origin.X, origin.Y, rc.Right - rc.Left, rc.Bottom - rc.Top));
       json.Append(",\"monitor\":" + Rect(m.Left, m.Top, m.Right - m.Left, m.Bottom - m.Top) + "}");
@@ -273,15 +276,16 @@ public static class T3Strip {
       }
       ImageCodecInfo jpeg = null;
       foreach (var c in ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
-      var ps = new EncoderParameters(1);
-      ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
-      outBmp.Save(ms, jpeg, ps);
+      using (var ps = new EncoderParameters(1)) {
+        ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
+        outBmp.Save(ms, jpeg, ps);
+      }
       return Convert.ToBase64String(ms.ToArray());
     }
   }
 
   public static void Serve() {
-    SetThreadDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
     var input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
     var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
     output.NewLine = "\n";
@@ -312,7 +316,7 @@ ${WIN_HELPER_CS}
 [T3Strip]::Serve()`;
 
 // The helper process, started on first use and kept for the bridge's lifetime: starting
-// PowerShell and compiling the C# takes a second or two, far too slow per frame. Its
+// PowerShell and compiling the C# takes about half a second, far too slow per frame. Its
 // window is hidden, and it exits when its stdin closes (that is, with the bridge).
 class WinHelper {
   constructor() {
@@ -405,15 +409,10 @@ class WinHelper {
   async shot(x, y, w, h, ow, oh) {
     return Buffer.from(await this.request(`shot ${x} ${y} ${w} ${h} ${ow} ${oh}`, 8000), 'base64');
   }
-
-  close() {
-    this.proc?.kill();
-    this.proc = null;
-  }
 }
 
-// A capture that's black from edge to edge. The strip's corner of a running game never
-// is, but exclusive fullscreen hands GDI a black screen.
+// A capture that's black from edge to edge. Exclusive fullscreen hands GDI a black screen;
+// the game itself only goes black for a moment, or in a cinematic's letterbox bars.
 function isBlack(image) {
   return !image.data.some((v) => v > 8);
 }
@@ -432,7 +431,7 @@ export class StripCapture {
     this.log = log;
     this.platform = platform;
     this.backend = backend;
-    this.manualRegion = region; // { x, y, width, height } in compositor (logical) coordinates
+    this.manualRegion = region; // { x, y, width, height } in compositor (logical) coordinates; physical pixels on Windows
     this.hint = null;
     this.lastError = null;
     this.lastSeenAt = 0;
@@ -441,6 +440,7 @@ export class StripCapture {
     this.macCache = null; // { pid, at, win }: the window list costs an osascript run
     this.macAsked = false;
     this.win = null; // WinHelper, started on first use
+    this.blackSince = 0; // when a fullscreen game window started reading as black
     this.tmpDir = null;
   }
 
@@ -496,6 +496,19 @@ export class StripCapture {
   // The game window on Windows, with its client area in physical pixels.
   async winWindow(pid) {
     return pickWindowsWindow(await this.winHelper().windows(pid), pid);
+  }
+
+  // A fullscreen window whose corner reads black: exclusive fullscreen if its centre is
+  // black too, for longer than a fade or a loading screen lasts.
+  async looksExclusive(win) {
+    const size = 64;
+    const centre = parseBMP(await this.winHelper().grab(win.x + ((win.width - size) >> 1), win.y + ((win.height - size) >> 1), size, size));
+    if (!isBlack(centre)) {
+      this.blackSince = 0;
+      return false;
+    }
+    this.blackSince ||= Date.now();
+    return Date.now() - this.blackSince > 5000;
   }
 
   tmpFile(name) {
@@ -564,7 +577,8 @@ export class StripCapture {
         region = { x: win.x, y: win.y };
       }
       const image = parseBMP(await this.winHelper().grab(region.x, region.y, px.width, px.height));
-      if (win?.fullscreen && isBlack(image)) throw new Error(EXCLUSIVE_FULLSCREEN_HELP);
+      if (!win?.fullscreen || !isBlack(image)) this.blackSince = 0;
+      else if (await this.looksExclusive(win)) throw new Error(EXCLUSIVE_FULLSCREEN_HELP);
       return { status: 'ok', image };
     }
     if (backend === 'hyprland' || backend === 'grim') {

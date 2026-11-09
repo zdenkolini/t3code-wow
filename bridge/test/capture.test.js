@@ -26,7 +26,7 @@ test('ignores menus and tiny windows, and reports a window on another Space as h
   assert.equal(pickMacWindow({ windows: [], screens }, 5).found, false);
 });
 
-test('Windows uses the windows backend, without POSIX-only calls', () => {
+test('Windows resolves to the windows backend instead of crashing on process.getuid', () => {
   assert.equal(new StripCapture({ platform: 'win32' }).resolveBackend(), 'windows');
 });
 
