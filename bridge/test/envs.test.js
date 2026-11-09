@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,6 +7,7 @@ import { assertOwnerOnly } from './owner-only.js';
 
 // envs.js picks its folder when it loads, so point it at a temporary one first.
 process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-envs-'));
+after(() => fs.rmSync(process.env.XDG_CONFIG_HOME, { recursive: true, force: true }));
 const { saveToken, readTokenData, tokenFile } = await import('../src/envs.js');
 
 test('remote tokens: readable only by this account, also when one is renewed', async () => {
