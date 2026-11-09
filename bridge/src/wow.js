@@ -158,6 +158,7 @@ function winInstalls({ system, env = process.env, registry = readRegistry } = {}
   const add = (d) => d && !dirs.includes(d) && dirs.push(d);
   const programData = winPath(system, env.PROGRAMDATA || env.ProgramData || 'C:\\ProgramData');
   try {
+    if (!programData) throw new Error('no ProgramData folder');
     const db = fs.readFileSync(path.join(programData, 'Battle.net/Agent/product.db'), 'latin1');
     for (const m of db.matchAll(/[A-Za-z]:[\\/][^\x00-\x1f"]*?World of Warcraft(?=[\x00-\x1f"]|$)/g)) add(winPath(system, Buffer.from(m[0], 'latin1').toString('utf8')));
   } catch {}
@@ -180,7 +181,7 @@ function winInstalls({ system, env = process.env, registry = readRegistry } = {}
       : 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter((d) => fs.existsSync(`${d}:\\`));
     classify(drives.flatMap((d) => ['Program Files (x86)', 'Program Files', '', 'Games'].map((f) => winPath(system, `${d}:\\${f}\\World of Warcraft`))), forever, wowOnly);
   }
-  const battlenet = [winPath(system, registry(`${UNINSTALL}\\Battle.net`, 'InstallLocation') || ''), path.join(programData, 'Battle.net')]
+  const battlenet = [winPath(system, registry(`${UNINSTALL}\\Battle.net`, 'InstallLocation') || ''), programData && path.join(programData, 'Battle.net')]
     .filter((p, i, all) => p && all.indexOf(p) === i && fs.existsSync(p));
   return { forever, wowOnly, prefixes: battlenet };
 }
@@ -273,10 +274,11 @@ export function parseTasklist(text) {
   return [...text.matchAll(/^"Wow\.exe","(\d+)"/gim)].map((m) => Number(m[1]));
 }
 
-// A client we may not inspect (one run as administrator) has no start time, and
-// reading it throws; skip it rather than lose the whole listing.
-const WIN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -Name Wow -ErrorAction SilentlyContinue | ForEach-Object { try { ($_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds(), $_.Path) -join [char]9 } catch {} }";
-let winProcCache = { pids: null, proc: null };
+// A client run as administrator still shows its path, but reading its start time throws:
+// report 0 for it rather than lose the client (a restart is still a new pid).
+const WIN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -Name Wow -ErrorAction SilentlyContinue | ForEach-Object { $t = 0; try { $t = ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds() } catch {}; ($_.Id, $t, $_.Path) -join [char]9 }";
+const WIN_PS_RETRY_MS = 60000;
+let winProcCache = { pids: null, proc: null, failedAt: 0 };
 
 // tasklist takes ~0.1 s; PowerShell, which can tell Forever from Retail by path and
 // knows the start time, takes ~0.3 s or more. The bridge checks every few seconds,
@@ -287,11 +289,13 @@ function findWindowsProcess() {
   const tl = spawnSync(path.join(sys32, 'tasklist.exe'), ['/fi', 'IMAGENAME eq Wow.exe', '/fo', 'csv', '/nh'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
   if (tl.status !== 0) return null;
   const pids = parseTasklist(tl.stdout).join(',');
-  if (!pids) return (winProcCache = { pids, proc: null }).proc;
-  if (pids === winProcCache.pids) return winProcCache.proc;
-  const ps = spawnSync(path.join(sys32, 'WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', WIN_PS], { encoding: 'utf8', timeout: 15000, windowsHide: true });
-  if (ps.error) return null;
-  return (winProcCache = { pids, proc: parseWindowsProcesses(ps.stdout) }).proc;
+  if (!pids) return (winProcCache = { pids, proc: null, failedAt: 0 }).proc;
+  const failed = winProcCache.failedAt && Date.now() - winProcCache.failedAt >= WIN_PS_RETRY_MS;
+  if (pids === winProcCache.pids && !failed) return winProcCache.proc;
+  // A hung PowerShell blocks the bridge, so give up quickly and wait a minute before asking again.
+  const ps = spawnSync(path.join(sys32, 'WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', WIN_PS], { encoding: 'utf8', timeout: 3000, windowsHide: true });
+  if (ps.error || ps.status !== 0) return (winProcCache = { pids, proc: null, failedAt: Date.now() }).proc;
+  return (winProcCache = { pids, proc: parseWindowsProcesses(ps.stdout), failedAt: 0 }).proc;
 }
 
 export function processKey(p) {

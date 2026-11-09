@@ -133,6 +133,14 @@ test('tells WoW without Forever apart from no WoW at all on Windows', (t) => {
   assert.deepEqual(find().forever, [path.join(sys, 'F/Games/World of Warcraft/_forever_')]);
 });
 
+test('a ProgramData that is not on a drive letter is skipped, not fatal', (t) => {
+  const { sys, find } = windows(t);
+  touch(path.join(sys, 'D/Games/World of Warcraft/_forever_/Wow.exe'));
+  const r = findAny({ platform: 'win32', system: sys, env: { PROGRAMDATA: '\\\\server\\ProgramData' }, registry: () => null });
+  assert.deepEqual(r.forever, [path.join(sys, 'D/Games/World of Warcraft/_forever_')]);
+  assert.ok(find());
+});
+
 test('a folder given by hand overrides detection and may name the WoW folder or Forever itself', (t) => {
   const { sys } = windows(t);
   touch(path.join(sys, 'G/WoW/_forever_/Wow.exe'));
