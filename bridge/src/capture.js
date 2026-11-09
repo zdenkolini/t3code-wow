@@ -3,9 +3,10 @@
 //
 // Hyprland (and other wlroots compositors) allow screencopy, so `grim` can read the
 // game's pixels on Wayland. X11 sessions use ImageMagick's `import`. macOS uses its
-// own `screencapture`, which needs the Screen Recording permission.
+// own `screencapture`, which needs the Screen Recording permission. Windows uses GDI
+// through a long-lived PowerShell helper.
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -156,6 +157,283 @@ export function pickMacWindow(info, pid) {
   return { found: true, visible: win.onscreen, x: b.X, y: b.Y, width: b.Width, height: b.Height, scale: screen?.scale || 1 };
 }
 
+// ---------------------------------------------------------------------------
+// Windows: a long-lived PowerShell process hosting inline C# (GDI), see WinHelper below.
+
+// The class of Forever's game window, which finds it when the pid isn't known.
+const WOW_WINDOW_CLASS = 'waApplication Window';
+
+// The game window from the helper's window list. Client areas are in physical pixels
+// (the helper is per-monitor DPI aware), so the strip needs no scaling.
+export function pickWindowsWindow(info, pid) {
+  // A minimized window has no client area, so only drop small windows that aren't minimized.
+  const big = (w) => w.iconic || (w.client.width > 100 && w.client.height > 100);
+  const game = info.windows.filter((w) => !w.tool && big(w) && (w.pid === pid || w.cls === WOW_WINDOW_CLASS));
+  const mine = game.filter((w) => w.pid === pid);
+  const pool = mine.length ? mine : game;
+  const shown = (w) => w.visible && !w.iconic && !w.cloaked;
+  const area = (w) => w.client.width * w.client.height;
+  const win = pool.sort((a, b) => Number(shown(b)) - Number(shown(a)) || area(b) - area(a))[0];
+  if (!win) return { found: false };
+  const c = win.client;
+  const m = win.monitor;
+  const fullscreen = !!m && c.x === m.x && c.y === m.y && c.width === m.width && c.height === m.height;
+  return { found: true, visible: shown(win), x: c.x, y: c.y, width: c.width, height: c.height, scale: (win.dpi || 96) / 96, fullscreen };
+}
+
+// Compiled by PowerShell's Add-Type when the helper starts (the C# compiler ships with
+// Windows' .NET Framework), so there's nothing to build or install. It answers one
+// request per stdin line with one stdout line, "ok <data>" or "err <message>":
+//   windows <pid>           JSON window list for pickWindowsWindow
+//   grab <x> <y> <w> <h>    base64 BMP of that screen rectangle (physical pixels)
+//   shot <x> <y> <w> <h> <outW> <outH>   base64 JPEG, scaled to outW x outH
+// The thread is per-monitor DPI aware, so every coordinate is in physical pixels, across
+// all monitors and scale factors.
+const WIN_HELPER_CS = String.raw`
+using System;
+using System.IO;
+using System.Text;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+public static class T3Strip {
+  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+  [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+  const int DWMWA_CLOAKED = 14, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
+  const uint MONITOR_DEFAULTTONEAREST = 2;
+  static readonly IntPtr PER_MONITOR_AWARE_V2 = new IntPtr(-4);
+  delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int max);
+  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
+  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
+  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+  [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
+
+  static string Rect(int x, int y, int w, int h) {
+    return "{\"x\":" + x + ",\"y\":" + y + ",\"width\":" + w + ",\"height\":" + h + "}";
+  }
+
+  // Top-level windows owned by pid, or with the game's window class.
+  static string Windows(uint wanted) {
+    var json = new StringBuilder("{\"windows\":[");
+    bool first = true;
+    EnumWindows(delegate (IntPtr h, IntPtr l) {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      var cls = new StringBuilder(256);
+      GetClassName(h, cls, cls.Capacity);
+      if (pid != wanted && cls.ToString() != "${WOW_WINDOW_CLASS}") return true;
+      RECT rc; GetClientRect(h, out rc);
+      var origin = new POINT(); ClientToScreen(h, ref origin);
+      int cloaked; if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4) != 0) cloaked = 0;
+      var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(mi);
+      GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), ref mi);
+      var m = mi.rcMonitor;
+      if (!first) json.Append(',');
+      first = false;
+      json.Append("{\"pid\":" + pid + ",\"cls\":\"" + cls.ToString().Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+      json.Append(",\"visible\":" + (IsWindowVisible(h) ? "true" : "false"));
+      json.Append(",\"iconic\":" + (IsIconic(h) ? "true" : "false"));
+      json.Append(",\"cloaked\":" + (cloaked != 0 ? "true" : "false"));
+      json.Append(",\"tool\":" + ((GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0 ? "true" : "false"));
+      json.Append(",\"dpi\":" + GetDpiForWindow(h));
+      json.Append(",\"client\":" + Rect(origin.X, origin.Y, rc.Right - rc.Left, rc.Bottom - rc.Top));
+      json.Append(",\"monitor\":" + Rect(m.Left, m.Top, m.Right - m.Left, m.Bottom - m.Top) + "}");
+      return true;
+    }, IntPtr.Zero);
+    return json.Append("]}").ToString();
+  }
+
+  static Bitmap Copy(int x, int y, int w, int h) {
+    var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+    using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
+    return bmp;
+  }
+
+  static string Grab(int x, int y, int w, int h) {
+    using (var bmp = Copy(x, y, w, h)) using (var ms = new MemoryStream()) {
+      bmp.Save(ms, ImageFormat.Bmp);
+      return Convert.ToBase64String(ms.ToArray());
+    }
+  }
+
+  static string Shot(int x, int y, int w, int h, int ow, int oh) {
+    using (var bmp = Copy(x, y, w, h)) using (var outBmp = new Bitmap(ow, oh, PixelFormat.Format24bppRgb)) using (var ms = new MemoryStream()) {
+      using (var g = Graphics.FromImage(outBmp)) {
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.DrawImage(bmp, 0, 0, ow, oh);
+      }
+      ImageCodecInfo jpeg = null;
+      foreach (var c in ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
+      using (var ps = new EncoderParameters(1)) {
+        ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
+        outBmp.Save(ms, jpeg, ps);
+      }
+      return Convert.ToBase64String(ms.ToArray());
+    }
+  }
+
+  public static void Serve() {
+    SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
+    var input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
+    var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+    output.NewLine = "\n";
+    output.AutoFlush = true;
+    string line;
+    while ((line = input.ReadLine()) != null) {
+      string reply;
+      try {
+        var a = line.Trim().Split(' ');
+        Func<int, int> n = i => int.Parse(a[i]);
+        if (a[0] == "windows") reply = Windows(uint.Parse(a[1]));
+        else if (a[0] == "grab") reply = Grab(n(1), n(2), n(3), n(4));
+        else if (a[0] == "shot") reply = Shot(n(1), n(2), n(3), n(4), n(5), n(6));
+        else throw new Exception("unknown request " + a[0]);
+        reply = "ok " + reply;
+      } catch (Exception e) {
+        reply = "err " + e.Message.Replace('\r', ' ').Replace('\n', ' ');
+      }
+      output.WriteLine(reply);
+    }
+  }
+}`;
+
+const WIN_HELPER_PS = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+${WIN_HELPER_CS}
+'@
+[T3Strip]::Serve()`;
+
+// The helper process, started on first use and kept for the bridge's lifetime: starting
+// PowerShell and compiling the C# takes about half a second, far too slow per frame. Its
+// window is hidden, and it exits when its stdin closes (that is, with the bridge).
+class WinHelper {
+  constructor() {
+    this.proc = null;
+    this.pending = []; // { resolve, reject } in request order
+    this.out = '';
+    this.err = '';
+    this.warm = false; // answered once: PowerShell has started and compiled the helper
+    this.failures = 0; // in a row, for the restart backoff
+    this.retryAt = 0;
+    this.lastError = null;
+  }
+
+  start() {
+    const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const encoded = Buffer.from(WIN_HELPER_PS, 'utf16le').toString('base64');
+    const proc = spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', encoded], {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.proc = proc;
+    this.warm = false;
+    this.out = '';
+    this.err = '';
+    proc.stdout.setEncoding('utf8');
+    proc.stdout.on('data', (d) => {
+      this.out += d;
+      let i;
+      while ((i = this.out.indexOf('\n')) >= 0) {
+        const line = this.out.slice(0, i).replace(/\r$/, '');
+        this.out = this.out.slice(i + 1);
+        const p = this.pending.shift();
+        if (!p) continue;
+        if (line.startsWith('ok ')) p.resolve(line.slice(3));
+        else p.reject(new Error(line.replace(/^err /, '')));
+      }
+      this.idle();
+    });
+    proc.stderr.setEncoding('utf8');
+    proc.stderr.on('data', (d) => (this.err = (this.err + d).slice(-2000)));
+    const fail = (why) => {
+      if (this.proc !== proc) return;
+      this.proc = null;
+      // PowerShell may still wrap stderr in CLIXML; the error itself is at the end.
+      const detail = this.err.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/\s+/g, ' ').trim().slice(-300);
+      this.lastError = `capture helper ${why}${detail ? `: ${detail}` : ''}`;
+      // A helper that keeps failing (PowerShell blocked, Add-Type refused) isn't restarted on every poll.
+      this.failures++;
+      this.retryAt = Date.now() + Math.min(60000, 5000 * 2 ** (this.failures - 1));
+      for (const p of this.pending.splice(0)) p.reject(new Error(this.lastError));
+    };
+    proc.on('error', (e) => fail(`failed to start (${e.message})`));
+    proc.on('exit', (code) => fail(`exited (${code})`));
+    proc.stdin.on('error', () => {});
+  }
+
+  // While nothing is pending, don't let the helper keep a short command (probe) alive.
+  idle() {
+    if (!this.proc) return;
+    const streams = [this.proc, this.proc.stdin, this.proc.stdout, this.proc.stderr];
+    for (const s of streams) this.pending.length ? s.ref?.() : s.unref?.();
+  }
+
+  request(line, timeout = 4000) {
+    if (!this.proc) {
+      const wait = this.retryAt - Date.now();
+      if (wait > 0) return Promise.reject(new Error(`${this.lastError} (retrying in ${Math.ceil(wait / 1000)} s)`));
+      this.start();
+    }
+    const proc = this.proc;
+    // The first request also waits for PowerShell to start and compile the helper.
+    if (!this.warm) timeout += 20000;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        proc.kill();
+        reject(new Error('capture helper timed out'));
+      }, timeout);
+      this.pending.push({
+        resolve: (v) => {
+          clearTimeout(timer);
+          this.warm = true;
+          this.failures = 0;
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
+      this.idle();
+      proc.stdin.write(`${line}\n`);
+    });
+  }
+
+  async windows(pid) {
+    return JSON.parse(await this.request(`windows ${Number(pid) || 0}`));
+  }
+
+  async grab(x, y, w, h) {
+    return Buffer.from(await this.request(`grab ${x} ${y} ${w} ${h}`), 'base64');
+  }
+
+  async shot(x, y, w, h, ow, oh) {
+    return Buffer.from(await this.request(`shot ${x} ${y} ${w} ${h} ${ow} ${oh}`, 8000), 'base64');
+  }
+}
+
+// A capture that's black from edge to edge. Exclusive fullscreen hands GDI a black screen;
+// the game itself only goes black for a moment, or in a cinematic's letterbox bars.
+function isBlack(image) {
+  return !image.data.some((v) => v > 8);
+}
+
+export const EXCLUSIVE_FULLSCREEN_HELP =
+  "The game's screen reads as black, which happens in exclusive fullscreen. In game, open Options > Graphics and set Display Mode to Windowed (Fullscreen), or Windowed.";
+
 // Built at import time, so getuid is optional: Windows doesn't have it, and only macOS shows this.
 export const SCREEN_PERMISSION_HELP =
   `macOS hasn't let the bridge record the screen. Open System Settings > Privacy & Security > Screen & System Audio Recording, turn on ${path.basename(process.execPath)} (${process.execPath}), then restart the bridge with: launchctl kickstart -k gui/${process.getuid?.()}/t3code-wow`;
@@ -163,10 +441,11 @@ export const SCREEN_PERMISSION_HELP =
 // ---------------------------------------------------------------------------
 
 export class StripCapture {
-  constructor({ log = () => {}, backend = 'auto', region = null } = {}) {
+  constructor({ log = () => {}, backend = 'auto', region = null, platform = process.platform } = {}) {
     this.log = log;
+    this.platform = platform;
     this.backend = backend;
-    this.manualRegion = region; // { x, y, width, height } in compositor (logical) coordinates
+    this.manualRegion = region; // { x, y, width, height } in compositor (logical) coordinates; physical pixels on Windows
     this.hint = null;
     this.lastError = null;
     this.lastSeenAt = 0;
@@ -174,12 +453,15 @@ export class StripCapture {
     this.lastImage = null;
     this.macCache = null; // { pid, at, win }: the window list costs an osascript run
     this.macAsked = false;
+    this.win = null; // WinHelper, started on first use
+    this.blackSince = 0; // when a fullscreen game window started reading as black
     this.tmpDir = null;
   }
 
   resolveBackend() {
     if (this.backend !== 'auto') return this.backend;
-    if (process.platform === 'darwin') return 'macos';
+    if (this.platform === 'darwin') return 'macos';
+    if (this.platform === 'win32') return 'windows';
     if (process.env.WAYLAND_DISPLAY || hyprSocket()) {
       if (hyprSocket() && which('grim')) return 'hyprland';
       if (which('grim')) return 'grim';
@@ -218,6 +500,29 @@ export class StripCapture {
   // there's nothing to ask.
   prepare() {
     if (this.resolveBackend() === 'macos') this.requestScreenAccess();
+  }
+
+  winHelper() {
+    if (!this.win) this.win = new WinHelper();
+    return this.win;
+  }
+
+  // The game window on Windows, with its client area in physical pixels.
+  async winWindow(pid) {
+    return pickWindowsWindow(await this.winHelper().windows(pid), pid);
+  }
+
+  // A fullscreen window whose corner reads black: exclusive fullscreen if its centre is
+  // black too, for longer than a fade or a loading screen lasts.
+  async looksExclusive(win) {
+    const size = 64;
+    const centre = parseBMP(await this.winHelper().grab(win.x + ((win.width - size) >> 1), win.y + ((win.height - size) >> 1), size, size));
+    if (!isBlack(centre)) {
+      this.blackSince = 0;
+      return false;
+    }
+    this.blackSince ||= Date.now();
+    return Date.now() - this.blackSince > 5000;
   }
 
   tmpFile(name) {
@@ -272,6 +577,24 @@ export class StripCapture {
       // screencapture works in physical pixels: scale the slack to match the image.
       return { status: 'ok', image, searchY: Math.ceil(searchY * (image.width / w)) };
     }
+    if (backend === 'windows') {
+      let region = this.manualRegion;
+      let win = null;
+      if (!region) {
+        win = await this.winWindow(wowPid);
+        if (!win.found) return { status: 'no-window' };
+        if (!win.visible) {
+          this.stats.notVisible++;
+          return { status: 'hidden' };
+        }
+        // The client area starts below the title bar, so the strip is at its corner.
+        region = { x: win.x, y: win.y };
+      }
+      const image = parseBMP(await this.winHelper().grab(region.x, region.y, px.width, px.height));
+      if (!win?.fullscreen || !isBlack(image)) this.blackSince = 0;
+      else if (await this.looksExclusive(win)) throw new Error(EXCLUSIVE_FULLSCREEN_HELP);
+      return { status: 'ok', image };
+    }
     if (backend === 'hyprland' || backend === 'grim') {
       let region = this.manualRegion;
       let scale = 1;
@@ -324,6 +647,16 @@ export class StripCapture {
         } catch {}
         fs.rmSync(file, { force: true });
       }
+      return { data, name, mime: 'image/jpeg' };
+    }
+    if (backend === 'windows') {
+      const win = await this.winWindow(wowPid);
+      if (!win.found) throw new Error("the game window isn't open");
+      if (!win.visible) throw new Error("the game window isn't on screen");
+      // Keep high-DPI captures at the logical size, as on macOS.
+      const ow = Math.round(win.width / win.scale);
+      const oh = Math.round(win.height / win.scale);
+      const data = await this.winHelper().shot(win.x, win.y, win.width, win.height, ow, oh);
       return { data, name, mime: 'image/jpeg' };
     }
     if (backend === 'hyprland' || backend === 'grim') {
