@@ -264,7 +264,7 @@ export class Bridge {
       this.log(`couldn't prepare the update bells: ${err.message}`);
     }
     const v = this.voice.describe();
-    this.log(`speech: ${v.tts || 'none'}; dictation: ${v.dictation || 'none'}; capture: ${this.capture.resolveBackend()}`);
+    this.log(`speech: ${v.tts || v.unavailable || 'none'}; dictation: ${v.dictation || v.unavailable || 'none'}; capture: ${this.capture.resolveBackend()}`);
     this.t3.on('state', (s, e) => {
       this.log(`T3: ${s}${e ? ` (${e})` : ''}`);
       this.markDirty('important');
@@ -488,12 +488,12 @@ export class Bridge {
         case 'speak': {
           const text = await this.speechFor(a0, a1);
           if (!text) throw new Error('nothing to read');
-          if (!this.voice.speak(text)) throw new Error('no text-to-speech engine on this system');
+          if (!this.voice.speak(text)) throw new Error(this.voice.missingSpeech());
           ok = null;
           break;
         }
         case 'say':
-          if (!this.voice.speak(a0)) throw new Error('no text-to-speech engine on this system');
+          if (!this.voice.speak(a0)) throw new Error(this.voice.missingSpeech());
           ok = null;
           break;
         case 'hush':
@@ -532,7 +532,7 @@ export class Bridge {
     const v = this.voice;
     const viaOmarchy = v.canOmarchyDictate();
     if (!viaOmarchy && !v.canTranscribe()) {
-      throw new Error('no dictation backend; pick one in Omarchy > Setup > Defaults > Dictation');
+      throw new Error(v.missingDictation());
     }
     if (action === 'start') {
       if (viaOmarchy) v.startOmarchy();

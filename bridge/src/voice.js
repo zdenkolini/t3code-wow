@@ -5,6 +5,7 @@
 // Dictation: record the mic with pw-record and transcribe with `voxtype transcribe`;
 // the bridge sends the text to the addon. Without those, fall back to Omarchy's
 // `omarchy-dictation`, which pastes into the focused window.
+// Windows has neither yet: both report "not available on Windows".
 
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
@@ -31,7 +32,9 @@ export function which(bin) {
 }
 
 export class Voice {
-  constructor({ ttsCommand = null, rate = 0, log = () => {} } = {}) {
+  constructor({ ttsCommand = null, rate = 0, log = () => {}, platform = process.platform } = {}) {
+    // Why speech and dictation can't work here at all, whatever is installed.
+    this.unavailable = platform === 'win32' ? 'not available on Windows' : null;
     this.ttsCommand = ttsCommand; // e.g. "piper-say" or "my-tts --stdin"; text arrives on stdin
     this.rate = rate;
     this.log = log;
@@ -40,6 +43,7 @@ export class Voice {
   }
 
   ttsEngine() {
+    if (this.unavailable) return null;
     if (this.ttsCommand) return { kind: 'custom', cmd: this.ttsCommand };
     const spd = which('spd-say');
     if (spd) return { kind: 'spd', cmd: spd };
@@ -51,6 +55,7 @@ export class Voice {
   }
 
   describe() {
+    if (this.unavailable) return { tts: null, dictation: null, unavailable: this.unavailable };
     const e = this.ttsEngine();
     const dictation = this.canOmarchyDictate()
       ? `omarchy-dictation (${this.backendName() || 'no backend set'})`
@@ -65,7 +70,7 @@ export class Voice {
       } catch {}
       this.current = null;
     }
-    const spd = which('spd-say');
+    const spd = !this.unavailable && which('spd-say');
     if (spd) spawn(spd, ['--cancel'], { stdio: 'ignore' }).on('error', () => {});
   }
 
@@ -74,7 +79,7 @@ export class Voice {
     if (!text) return false;
     const engine = this.ttsEngine();
     if (!engine) {
-      this.log('speak: no text-to-speech engine found (install speech-dispatcher or espeak-ng, or set tts.command)');
+      this.log(this.unavailable ? `speak: read-aloud is ${this.unavailable}` : 'speak: no text-to-speech engine found (install speech-dispatcher or espeak-ng, or set tts.command)');
       return false;
     }
     this.hush();
@@ -114,7 +119,19 @@ export class Voice {
   // keystroke; that keystroke doesn't reliably reach the game under Wine, so we
   // watch the clipboard and hand the text to the addon ourselves.
 
+  // What to tell the player when nothing can read aloud.
+  missingSpeech() {
+    return this.unavailable ? `Read-aloud is ${this.unavailable}.` : 'no text-to-speech engine on this system';
+  }
+
+  // What to tell the player when there's no way to dictate.
+  missingDictation() {
+    if (this.unavailable) return `Dictation is ${this.unavailable}.`;
+    return 'no dictation backend; pick one in Omarchy > Setup > Defaults > Dictation';
+  }
+
   canOmarchyDictate() {
+    if (this.unavailable) return false;
     return !!(which('omarchy-dictation') && which('wl-paste'));
   }
 
@@ -223,6 +240,7 @@ export class Voice {
   }
 
   canTranscribe() {
+    if (this.unavailable) return false;
     return !!(this.recorder() && this.transcriber());
   }
 

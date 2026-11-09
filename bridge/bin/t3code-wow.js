@@ -391,7 +391,8 @@ function cmdStatus(args) {
     console.log(`${ok(false)} Addon: not heard from yet ${C.d('(log in, then /t3)')}`);
   }
   console.log(`  Live updates left this session: ${st.slots.remaining}/${st.slots.total} ${C.d(`· ${st.publishes} updates sent · update bell #${st.signals.next}`)}`);
-  console.log(`  Speech: ${st.voice.tts || C.y('none')} · Dictation: ${st.voice.dictation || C.y('none')}`);
+  const none = C.y(st.voice.unavailable || 'none');
+  console.log(`  Speech: ${st.voice.tts || none} · Dictation: ${st.voice.dictation || none}`);
   if (args.log || args.v) {
     console.log('');
     for (const l of st.log) console.log(C.d(l));
