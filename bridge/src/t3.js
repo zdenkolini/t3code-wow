@@ -24,6 +24,15 @@ export function readRuntime() {
   return runtime;
 }
 
+// T3 Code serves only while it's open (on Windows, only while the desktop app runs):
+// no runtime file yet, or nothing listening at the address it last wrote.
+export const LOCAL_DOWN = "T3 Code isn't running on this computer. Open T3 Code; the bridge reconnects on its own.";
+
+function serverDown(err) {
+  const codes = [err?.code, err?.cause?.code, ...(err?.cause?.errors || []).map((e) => e.code)];
+  return codes.includes('ENOENT') || codes.includes('ECONNREFUSED');
+}
+
 const WORKING = new Set(['preparing', 'queued', 'starting', 'running', 'waiting']);
 
 // Collapse the server's thread fields into the handful the game needs.
@@ -65,6 +74,7 @@ export class T3Client extends EventEmitter {
     this.tokenProvider = tokenProvider;
     // Where the server is: this machine's runtime file by default, or a function
     // that finds a remote machine's address.
+    this.local = !originProvider;
     this.originProvider = originProvider || (async () => readRuntime().origin);
     this.label = label;
     this.log = log;
@@ -123,7 +133,7 @@ export class T3Client extends EventEmitter {
       url.searchParams.set('wsTicket', ticket);
       await this.open(url);
     } catch (err) {
-      this.setState('offline', err.message);
+      this.setState('offline', this.local && serverDown(err) ? LOCAL_DOWN : err.message);
       this.scheduleReconnect();
     }
   }
