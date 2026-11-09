@@ -34,6 +34,8 @@ cd t3code-wow
 ./install.sh                 # installs the addon and the bridge from your checkout
 ```
 
+On Windows, run `powershell -ExecutionPolicy Bypass -File .\install.ps1` instead of `./install.sh`, here and below.
+
 After editing, run `./install.sh` from your checkout, then `/reload` in game. It copies your checkout over the installed copy, puts the addon into the game and restarts the bridge. (`t3code-wow sync` only re-copies the *installed* addon, so it won't pick up your edits.) New files inside the addon load on `/reload`; new addon folders (such as live-update slots) need a full game restart.
 
 Tests:

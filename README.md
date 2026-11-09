@@ -3,7 +3,7 @@
 Watch and run your [T3 Code](https://t3.codes) agent threads without leaving the game. It's a native addon for World of Warcraft: Forever, built from Blizzard's own UI templates so it looks and plays like the rest of the interface, plus a small bridge that connects it to T3 Code.
 
 > [!WARNING]
-> **Early release, still experimental.** It's built for and tested on one setup: **Omarchy 4.5.0**, **T3 Code Nightly** (0.1.7-nightly) and **World of Warcraft: Forever** (1.60.x) under Proton. **macOS** with the native client is new and less tested (see [macOS](#macos)). Other setups may work but aren't supported yet. T3 Code Nightly's API changes often, so a T3 update can break things until this catches up. Expect rough edges, and please [report them](https://github.com/ryanrhughes/t3code-wow/issues).
+> **Early release, still experimental.** It's built for and tested on one setup: **Omarchy 4.5.0**, **T3 Code Nightly** (0.1.7-nightly) and **World of Warcraft: Forever** (1.60.x) under Proton. **macOS** with the native client is new and less tested (see [macOS](#macos)), and so is **Windows 11** (see [Windows](#windows)). Other setups may work but aren't supported yet. T3 Code Nightly's API changes often, so a T3 update can break things until this catches up. Expect rough edges, and please [report them](https://github.com/ryanrhughes/t3code-wow/issues).
 
 ## What it does
 
@@ -19,7 +19,7 @@ Watch and run your [T3 Code](https://t3.codes) agent threads without leaving the
 
 ## Requirements
 
-- **Omarchy 4.5.0** (Hyprland), or **macOS** (see [macOS](#macos)). On Omarchy the bridge reads the game window with Hyprland's screen capture, and dictation and usage come from Omarchy's own tools.
+- **Omarchy 4.5.0** (Hyprland), **macOS** (see [macOS](#macos)) or **Windows 11** (see [Windows](#windows)). On Omarchy the bridge reads the game window with Hyprland's screen capture, and dictation and usage come from Omarchy's own tools.
 - **T3 Code Nightly**, installed and running. Its `t3` command gives the bridge a login.
 - **World of Warcraft: Forever**, installed with Battle.net: Omarchy's Battle.net (Proton), or the native Mac app.
 - **Node.js 22** or newer.
@@ -56,13 +56,34 @@ The same install command works on a Mac with the native WoW: Forever client. Ins
 - **Speech** uses the system voice (`say`). **Dictation** isn't available on macOS yet, and the Usage tab shows what T3 Code reports.
 - `~/.local/bin` isn't on a Mac's PATH by default. The installer says so; add it to your shell profile, or run `~/.local/bin/t3code-wow`.
 
+### Windows
+
+On Windows 11, install from PowerShell instead:
+
+```powershell
+irm https://raw.githubusercontent.com/ryanrhughes/t3code-wow/main/install.ps1 | iex
+```
+
+Run the same command again to update, then `/reload` in game. It works in the Windows PowerShell that comes with Windows; you only need Node.js 22 or newer and T3 Code Nightly.
+
+- **Node.js.** Install it with `winget install OpenJS.NodeJS.LTS`, or with a version manager such as fnm (`fnm install --lts`). The installer records the Node it ran with, so the bridge starts even where a version manager hasn't set up PATH. After you upgrade Node, or remove the version you installed with, run the install command again.
+- **Finding the game.** The installer finds WoW: Forever from Battle.net's records, on any drive. If it picks the wrong folder or none, pass it yourself: `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/ryanrhughes/t3code-wow/main/install.ps1))) --wow-dir "D:\Games\World of Warcraft"`.
+- **From a clone**, run `powershell -ExecutionPolicy Bypass -File .\install.ps1` in it (add `--wow-dir` the same way if you need it).
+- **Display mode.** Run the game in Windowed or Windowed (Fullscreen). The bridge reads the strip off the screen, and exclusive Fullscreen shows it a black screen; `t3code-wow status` says so when that happens. Moving the window, other monitors and display scaling are fine.
+- **The `t3code-wow` command** is `t3code-wow.cmd` in `%USERPROFILE%\.local\bin`, which the installer adds to your user PATH (pass `--no-path` to leave PATH alone). Open a new terminal to use it.
+- **Starting at logon.** The bridge starts when you log in, from a startup entry named `t3code-wow` (under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), not a scheduled task, so it needs no administrator rights. The entry starts a small supervisor that runs the bridge and starts it again if it stops; `t3code-wow restart` restarts both, and `t3code-wow status` shows whether they're running.
+- **"Console Window Host" in Startup apps.** The entry runs `conhost.exe --headless node.exe ...\t3code-wow.js supervise`, so the bridge has no window and the game isn't interrupted by consoles. Because of that, Settings > Apps > Startup and Task Manager's Startup apps list it as "Console Window Host" from Microsoft. That's the bridge: switching it off stops it starting at logon (`t3code-wow restart` still starts it until you log out).
+- **Security software.** Some security software flags a startup entry that runs `conhost.exe --headless`, because malware uses the same trick to hide a window. If yours warns about it, check that the entry runs `node.exe` with `t3code-wow.js supervise` from `%USERPROFILE%\.local\share\t3code-wow`, and allow it. If security software blocks the PowerShell script the bridge reads the game with, see [When something's wrong](#when-somethings-wrong).
+- **T3 Code must be open.** On Windows, T3 Code only serves while its app is open. When it's closed, the game shows no local threads and `t3code-wow status` says to open T3 Code; machines you added with `t3code-wow env add` keep working.
+- **Speech and dictation** aren't available on Windows yet.
+
 ### Uninstall
 
 ```bash
 t3code-wow uninstall
 ```
 
-This removes the addon and its update folders, its settings in the game, the bridge service (or launch agent), the bridge's T3 Code sessions (here and on any machine you added) and its files. On macOS, also turn `node` off under Screen & System Audio Recording: uninstalling can't do that for you.
+This removes the addon and its update folders, its settings in the game, the bridge service (or launch agent, or Windows startup entry), the bridge's T3 Code sessions (here and on any machine you added) and its files. On Windows it also removes the `t3code-wow` command, and the PATH entry the installer added if nothing else is in that folder. On macOS, also turn `node` off under Screen & System Audio Recording: uninstalling can't do that for you.
 
 ## Using it
 
