@@ -74,7 +74,7 @@ export class T3Client extends EventEmitter {
     this.tokenProvider = tokenProvider;
     // Where the server is: this machine's runtime file by default, or a function
     // that finds a remote machine's address.
-    this.local = !originProvider;
+    this.isLocal = !originProvider;
     this.originProvider = originProvider || (async () => readRuntime().origin);
     this.label = label;
     this.log = log;
@@ -133,7 +133,7 @@ export class T3Client extends EventEmitter {
       url.searchParams.set('wsTicket', ticket);
       await this.open(url);
     } catch (err) {
-      this.setState('offline', this.local && serverDown(err) ? LOCAL_DOWN : err.message);
+      this.setState('offline', this.isLocal && serverDown(err) ? LOCAL_DOWN : err.message);
       this.scheduleReconnect();
     }
   }

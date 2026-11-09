@@ -27,7 +27,7 @@ test('a closed local T3 Code says to open it, and the client reconnects on its o
 
   // Closed again: the runtime file still names the old, now dead, port.
   writeRuntime(`http://127.0.0.1:${await closedPort()}`);
-  await new Promise((resolve) => client.once('state', (s) => s === 'connecting' && resolve()));
+  await waitForState(client, 'connecting');
   await waitForState(client, 'offline');
   assert.match(client.error, /open T3 Code/i);
 
@@ -39,9 +39,7 @@ test('a closed local T3 Code says to open it, and the client reconnects on its o
   // Closed while connected, then opened again.
   await server.close();
   await waitForState(client, 'offline');
-  await new Promise((resolve) => client.on('state', function on() {
-    if (client.error === LOCAL_DOWN) resolve(client.off('state', on));
-  }));
+  await waitForState(client, (s, e) => e === LOCAL_DOWN);
   const again = await fakeT3();
   t.after(() => again.close());
   writeRuntime(again.origin);

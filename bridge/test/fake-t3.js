@@ -49,13 +49,14 @@ export async function closedPort() {
   return port;
 }
 
-// Resolves once `client` emits `state` with the wanted value.
+// Resolves once `client` is in the wanted state, or a state its error satisfies.
 export function waitForState(client, wanted, timeoutMs = 10000) {
-  if (client.state === wanted) return Promise.resolve();
+  const done = () => (typeof wanted === 'function' ? wanted(client.state, client.error) : client.state === wanted);
+  if (done()) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`still ${client.state} (${client.error}) after ${timeoutMs} ms, wanted ${wanted}`)), timeoutMs);
-    const on = (s) => {
-      if (s !== wanted) return;
+    const timer = setTimeout(() => reject(new Error(`still ${client.state} (${client.error}) after ${timeoutMs} ms`)), timeoutMs);
+    const on = () => {
+      if (!done()) return;
       clearTimeout(timer);
       client.off('state', on);
       resolve();

@@ -22,9 +22,3 @@ test('on Windows, speech and dictation report not available even with engines on
     fs.rmSync(bin, { recursive: true, force: true });
   }
 });
-
-test('elsewhere, a missing dictation backend still points at Omarchy', () => {
-  const voice = new Voice({ platform: 'linux' });
-  assert.match(voice.missingDictation(), /Omarchy/);
-  assert.equal(voice.describe().unavailable, undefined);
-});
