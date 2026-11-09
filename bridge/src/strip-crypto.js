@@ -13,13 +13,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { writeSecretSync } from './secret-file.js';
 
 export const NONCE_BYTES = 12;
 export const TAG_BYTES = 8;
 export const OVERHEAD = NONCE_BYTES + TAG_BYTES;
 export const ENCRYPTED_VERSION = 2;
 
-// A random master key per install, kept in the state directory (0600).
+// A random master key per install, kept in the state directory, readable only by this account.
+// Loaded once at startup, so the write can be synchronous.
 export function loadOrCreateKey(stateDir) {
   const file = path.join(stateDir, 'strip.key');
   try {
@@ -28,7 +30,7 @@ export function loadOrCreateKey(stateDir) {
   } catch {}
   const key = crypto.randomBytes(32);
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(file, key.toString('hex') + '\n', { mode: 0o600 });
+  writeSecretSync(file, key.toString('hex') + '\n');
   return key;
 }
 

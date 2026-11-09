@@ -12,7 +12,7 @@ import { findWowInstalls, addonsDir as addonsDirOf, findWowProcess } from '../sr
 import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
 import { StripCapture, SCREEN_PERMISSION_HELP } from '../src/capture.js';
 import { decodeImage } from '../src/codec.js';
-import { identify, discoverTailscale, mintRemote, revokeRemote, saveToken, readTokenData, tokenFile } from '../src/envs.js';
+import { identify, discoverTailscale, mintRemote, revokeRemote, saveNewToken, readTokenData, tokenFile } from '../src/envs.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_ROOT = path.resolve(HERE, '..');
@@ -550,7 +550,7 @@ async function cmdEnv(args) {
     console.log(`${C.g('✓')} Found ${C.b(ident.label)} (${ident.platform?.machine || 'machine'}, T3 Code ${ident.serverVersion}) at ${good.join(', ')}`);
     process.stdout.write(`… Creating a T3 Code session on ${ident.label} over SSH (${ssh})\r`);
     const tok = await mintRemote(ssh, `WoW bridge (${local.label || os.hostname()})`);
-    saveToken(ident.environmentId, tok);
+    await saveNewToken({ id: ident.environmentId, ssh }, tok);
     console.log(`${C.g('✓')} Session created on ${ident.label} ${C.d(`(revoke with t3code-wow env remove ${ident.label})`)}`);
     const existing = cfg.environments.find((e) => e.id === ident.environmentId);
     const used = new Set(cfg.environments.map((e) => e.code));
