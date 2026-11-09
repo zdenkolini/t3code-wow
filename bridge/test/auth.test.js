@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findT3Cli } from '../src/auth.js';
+import { findT3Cli, t3Command } from '../src/auth.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-cli-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -66,4 +66,24 @@ test('T3_CLI overrides every other location', () => {
   touch(path.join(home, '.t3', 'bin', 't3.cmd'));
   const custom = touch(path.join(home, 'portable', 't3.cmd'));
   assert.equal(onWindows(home, { T3_CLI: custom }), custom);
+});
+
+const win = { platform: 'win32', comspec: 'C:/Windows/System32/cmd.exe' };
+
+test('runs a .cmd shim through cmd.exe with every argument quoted', () => {
+  const [file, argv, opts] = t3Command('C:/Program Files (x86)/T3 & Co/t3.cmd', ['--label', 'WoW bridge'], win);
+  assert.equal(file, 'C:/Windows/System32/cmd.exe');
+  assert.deepEqual(argv, ['/d', '/v:off', '/s', '/c', '""C:/Program Files (x86)/T3 & Co/t3.cmd" "--label" "WoW bridge""']);
+  assert.equal(opts.windowsVerbatimArguments, true);
+});
+
+test("refuses arguments cmd.exe would expand or that would run into the next one", () => {
+  for (const bad of ['%PATH%', 'say "hi"', 'two\r\nlines', 'C:/dir\\']) {
+    assert.throws(() => t3Command('C:/t3/t3.cmd', ['--label', bad], win), /safely/);
+  }
+});
+
+test('runs executables directly, and everything directly off Windows', () => {
+  assert.deepEqual(t3Command('C:/t3/t3.exe', ['a b'], win).slice(0, 2), ['C:/t3/t3.exe', ['a b']]);
+  assert.deepEqual(t3Command('/home/me/.t3/bin/t3', ['%x%'], { platform: 'linux' }).slice(0, 2), ['/home/me/.t3/bin/t3', ['%x%']]);
 });

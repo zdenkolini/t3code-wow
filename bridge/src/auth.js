@@ -1,7 +1,7 @@
 // The bridge's T3 session token. Minted with the user's own `t3` CLI, stored owner-only
 // under ~/.config/t3code-wow, renewed a week before it expires.
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -49,7 +49,7 @@ function findWindowsT3Cli(env, home) {
     path.join(home, '.local', 'bin', 't3.exe'),
   ];
   // Only types the bridge can launch: PATHEXT may also list scripts like .js or .vbs.
-  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.toLowerCase()).filter((e) => ['.com', '.exe', '.bat', '.cmd'].includes(e));
+  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.trim().toLowerCase()).filter((e) => ['.com', '.exe', '.bat', '.cmd'].includes(e));
   for (const dir of (env.PATH || '').split(';')) {
     const d = dir.trim().replace(/^"(.*)"$/, '$1');
     if (d) candidates.push(...exts.map((ext) => path.join(d, `t3${ext}`)));
@@ -75,35 +75,58 @@ export function mintToken({ label = 'WoW bridge' } = {}) {
       const token = stdout.split('\n').map((s) => s.trim()).filter(Boolean).pop();
       if (!token || !tokenClaims(token)) return reject(new Error('t3 auth session issue printed no token'));
       fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-      fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
-      ownerOnly(TOKEN_FILE).then(() => resolve(token), (e) => {
-        fs.rmSync(TOKEN_FILE, { force: true });
-        reject(e);
-      });
+      // Lock the new token down before it replaces the old one, so a failure keeps the old token.
+      const tmp = `${TOKEN_FILE}.new`;
+      try {
+        fs.writeFileSync(tmp, token, { mode: 0o600 });
+        ownerOnly(tmp);
+        fs.renameSync(tmp, TOKEN_FILE);
+      } catch (e) {
+        fs.rmSync(tmp, { force: true });
+        revokeSession(tokenClaims(token).sid, cli);
+        return reject(e);
+      }
+      resolve(token);
     });
   });
+}
+
+// Best effort; returns whether the session is gone.
+export function revokeSession(sid, cli = findT3Cli()) {
+  if (!sid || !cli) return false;
+  try {
+    const [file, argv, opts] = t3Command(cli, ['auth', 'session', 'revoke', sid]);
+    return spawnSync(file, argv, { ...opts, encoding: 'utf8', timeout: 60000 }).status === 0;
+  } catch {
+    return false;
+  }
 }
 
 // Node won't run a .cmd shim directly on Windows; it has to go through cmd.exe.
-// Every argument is quoted, and anything cmd would still expand inside quotes is refused.
-export function t3Command(cli, args) {
-  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(cli)) return [cli, args, { windowsHide: true }];
-  const unsafe = [cli, ...args].find((a) => /["%\r\n]/.test(a));
+// Every argument is quoted. Anything cmd would still expand inside quotes is refused, and so is
+// a trailing backslash, which the program would read as escaping the closing quote.
+export function t3Command(cli, args, { platform = process.platform, comspec = process.env.ComSpec } = {}) {
+  if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(cli)) return [cli, args, { windowsHide: true }];
+  const unsafe = [cli, ...args].find((a) => /["%\r\n]|\\$/.test(a));
   if (unsafe) throw new Error(`can't pass ${JSON.stringify(unsafe)} to ${path.basename(cli)} safely`);
   const line = [cli, ...args].map((a) => `"${a}"`).join(' ');
-  return [process.env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { windowsHide: true, windowsVerbatimArguments: true }];
+  return [comspec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { windowsHide: true, windowsVerbatimArguments: true }];
 }
 
-// POSIX modes don't apply on Windows: drop inherited access and grant only the current user.
+// POSIX modes don't apply on Windows: drop inherited access and grant only the current account,
+// named by its SID so a renamed account or an odd USERNAME can't point it elsewhere.
 function ownerOnly(file) {
-  if (process.platform !== 'win32') return Promise.resolve();
-  const user = process.env.USERDOMAIN ? `${process.env.USERDOMAIN}\\${process.env.USERNAME}` : process.env.USERNAME;
-  return new Promise((resolve, reject) => {
-    execFile('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`], { windowsHide: true, timeout: 15000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`could not limit ${file} to ${user}: ${(stderr || stdout || err.message).trim()}`));
-      resolve();
-    });
-  });
+  if (process.platform !== 'win32') return;
+  const opts = { encoding: 'utf8', windowsHide: true, timeout: 15000 };
+  // Full paths: Git for Windows puts its own whoami ahead of the system one on PATH.
+  const system32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  const sid = execFileSync(path.join(system32, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], opts).match(/S-1-[\d-]+/)?.[0];
+  if (!sid) throw new Error(`could not limit ${file} to the current user: whoami printed no SID`);
+  try {
+    execFileSync(path.join(system32, 'icacls.exe'), [file, '/inheritance:r', '/grant:r', `*${sid}:F`], { ...opts, stdio: 'pipe' });
+  } catch (e) {
+    throw new Error(`could not limit ${file} to the current user: ${(e.stderr || e.stdout || e.message).trim()}`);
+  }
 }
 
 export function readToken() {
