@@ -13,7 +13,8 @@ import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
 import { StripCapture, SCREEN_PERMISSION_HELP } from '../src/capture.js';
 import { decodeImage } from '../src/codec.js';
 import { identify, discoverTailscale, mintRemote, revokeRemote, saveNewToken, readTokenData, tokenFile } from '../src/envs.js';
-import { windowsAutostart, supervise } from '../src/service-windows.js';
+import { windowsAutostart, supervise, concreteNode } from '../src/service-windows.js';
+import { windowsCommand } from '../src/command-windows.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_ROOT = path.resolve(HERE, '..');
@@ -211,6 +212,25 @@ const launchd = {
 
 const service = MAC ? launchd : WIN ? windowsAutostart({ script: path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js'), stateDir: STATE_DIR }) : systemd;
 
+// On Windows the command is a t3code-wow.cmd that `install` writes (install.sh links it
+// elsewhere), in XDG_BIN_HOME if set, like other tools that use ~/.local/bin.
+const command = WIN && windowsCommand({
+  binDir: process.env.XDG_BIN_HOME || path.join(os.homedir(), '.local', 'bin'),
+  dataDir: DATA_DIR,
+  node: concreteNode(),
+  script: path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js'),
+});
+// Whether this copy is the one install.ps1 put in the data folder (not a clone).
+// Real paths, since a data folder reached through a junction or link resolves differently.
+const realPath = (p) => {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+};
+const installedCopy = path.relative(realPath(DATA_DIR), realPath(BRIDGE_ROOT)) === 'bridge';
+
 // Copy just the addon code (leaving Signals/ and generated media alone).
 function syncAddon(addonsDir) {
   const src = addonSource();
@@ -249,6 +269,16 @@ async function cmdInstall(args) {
   const { signals: _legacySignals, ...rest } = cfg;
   const next = { ...rest, wowDir, addonsDir, slots };
   writeConfig(next);
+
+  if (command && installedCopy) {
+    try {
+      // Remember a PATH entry this added, so uninstall takes off only its own.
+      if (command.install({ addToPath: !args['no-path'] })) writeConfig({ ...next, pathAdded: true });
+      console.log(`${C.g('✓')} t3code-wow command ready ${C.d(`(${command.file}; open a new terminal to use it)`)}`);
+    } catch (err) {
+      console.log(C.y(`! ${err.message}. Run t3code-wow as ${command.file}, or add ${path.dirname(command.file)} to your PATH.`));
+    }
+  }
 
   if (!findT3Cli()) {
     console.log(C.r('✗ The `t3` command was not found. Open T3 Code once (it installs `t3`), then run `t3code-wow install` again.'));
@@ -379,6 +409,13 @@ async function cmdRun(args) {
 async function cmdSupervise() {
   await supervise({ script: fileURLToPath(import.meta.url), stateDir: STATE_DIR });
   process.exit(0);
+}
+
+// Stop the running bridge until the next restart or logon. install.ps1 runs this before
+// it replaces the installed files; the install it runs next starts the bridge again.
+async function cmdStop() {
+  if (!service.stop) throw new Error('stop is only used by the Windows installer');
+  if (!(await service.stop())) process.exitCode = 1;
 }
 
 async function cmdRestart() {
@@ -527,9 +564,17 @@ async function cmdUninstall(args) {
   fs.rmSync(STATE_DIR, { recursive: true, force: true });
   done('Removed the bridge\'s settings and state');
 
-  try {
-    if (fs.lstatSync(BIN_LINK).isSymbolicLink() && fs.readlinkSync(BIN_LINK).startsWith(DATA_DIR)) fs.rmSync(BIN_LINK);
-  } catch {}
+  if (command) {
+    try {
+      command.remove({ pathAdded: cfg.pathAdded });
+    } catch (err) {
+      warn(`${err.message}; remove ${path.dirname(command.file)} from your PATH yourself if nothing else uses it.`);
+    }
+  } else {
+    try {
+      if (fs.lstatSync(BIN_LINK).isSymbolicLink() && fs.readlinkSync(BIN_LINK).startsWith(DATA_DIR)) fs.rmSync(BIN_LINK);
+    } catch {}
+  }
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   done('Removed the t3code-wow command and its files');
 
@@ -626,8 +671,8 @@ async function cmdEnv(args) {
 function help() {
   console.log(`${C.b('t3code-wow')} ${VERSION} — T3 Code inside World of Warcraft: Forever
 
-  t3code-wow install [--wow DIR | --wow-dir DIR] [--slots N] [--no-service]
-                     Install the addon, its live-update slots and the bridge service
+  t3code-wow install [--wow DIR | --wow-dir DIR] [--slots N] [--no-service]${WIN ? ' [--no-path]' : ''}
+                     Install the addon, its live-update slots and the bridge service${WIN ? '\n                     (--no-path: don\'t add the t3code-wow command to your PATH)' : ''}
   t3code-wow status [--log] [--json]
                      Show what the bridge sees
   t3code-wow restart     Restart the bridge service
@@ -648,7 +693,7 @@ function help() {
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0];
-const commands = { env: cmdEnv, install: cmdInstall, restart: cmdRestart, run: cmdRun, status: cmdStatus, supervise: cmdSupervise, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
+const commands = { env: cmdEnv, install: cmdInstall, restart: cmdRestart, run: cmdRun, status: cmdStatus, stop: cmdStop, supervise: cmdSupervise, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
 if (!cmd || args.help || !commands[cmd]) {
   help();
   if (cmd && !commands[cmd]) process.exitCode = 1;

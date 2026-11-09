@@ -226,6 +226,7 @@ export function windowsAutostart({ name = 't3code-wow', script, stateDir, node =
       // Start a fresh supervisor so a new node path or new bridge files take effect.
       return this.restart();
     },
+    stop,
     async restart() {
       return (await stop()) && launch();
     },
