@@ -192,6 +192,18 @@ const WIN_HELPER_SCRIPT = fileURLToPath(new URL('./capture-helper.ps1', import.m
 // window is hidden, and it exits when its stdin closes (that is, with the bridge).
 // Requests are numbered and each reply carries its request's number, so a stray line
 // (a PowerShell warning, say) is logged and dropped instead of answering the wrong request.
+// PowerShell's stderr, cut down to the message: it may come wrapped in CLIXML, it wraps text at
+// 120 columns even mid-word, and it follows the message with "At line" / "CategoryInfo" lines.
+export function helperErrorText(stderr) {
+  const lines = stderr.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, '\n').replace(/_x000D__x000A_/g, '\n').split(/\r?\n/);
+  let text = '';
+  for (const line of lines) {
+    if (/^\s*(At line:|At .*:\d+ char:|\+ |\+$|CategoryInfo|FullyQualifiedErrorId)/.test(line)) continue;
+    text += line.length >= 119 ? line : `${line} `;
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
 export class WinHelper {
   constructor({ spawn: spawnProc = spawn, log = () => {} } = {}) {
     this.spawn = spawnProc;
@@ -199,8 +211,6 @@ export class WinHelper {
     this.proc = null;
     this.pending = new Map(); // request number -> { resolve, reject }
     this.next = 1;
-    this.out = '';
-    this.err = '';
     this.warm = false; // answered once: PowerShell has started and compiled the helper
     this.failures = 0; // in a row, for the restart backoff
     this.retryAt = 0;
@@ -216,26 +226,26 @@ export class WinHelper {
     });
     this.proc = proc;
     this.warm = false;
-    this.out = '';
-    this.err = '';
+    // Buffers belong to this process: late output from a killed helper can't run into the next one's.
+    let out = '';
+    let err = '';
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (d) => {
-      this.out += d;
+      out += d;
       let i;
-      while ((i = this.out.indexOf('\n')) >= 0) {
-        const line = this.out.slice(0, i).replace(/\r$/, '');
-        this.out = this.out.slice(i + 1);
+      while ((i = out.indexOf('\n')) >= 0) {
+        const line = out.slice(0, i).replace(/\r$/, '');
+        out = out.slice(i + 1);
         this.answer(line);
       }
       this.idle();
     });
     proc.stderr.setEncoding('utf8');
-    proc.stderr.on('data', (d) => (this.err = (this.err + d).slice(-2000)));
+    proc.stderr.on('data', (d) => (err = (err + d).slice(-4000)));
     const fail = (why) => {
       if (this.proc !== proc) return;
       this.proc = null;
-      // PowerShell may still wrap stderr in CLIXML; the error itself is at the end.
-      const detail = this.err.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/\s+/g, ' ').trim().slice(-300);
+      const detail = helperErrorText(err);
       this.lastError = `capture helper ${why}${detail ? `: ${detail}` : ''}`;
       // A helper that keeps failing (PowerShell blocked, Add-Type refused) isn't restarted on every poll.
       this.failures++;

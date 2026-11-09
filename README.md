@@ -86,7 +86,7 @@ t3code-wow uninstall      # remove everything (see above)
 2. In game, run `/t3 selftest`. It checks each step between the game and T3 Code and says which one fails.
 3. `/t3 report` fills the T3 Code message box with diagnostics and attaches a screenshot of your game. Send it to an agent, or copy the text into an issue.
 
-On Windows, if `t3code-wow status --log` shows a capture helper error that names your security software or a blocked script, that software stopped the PowerShell script the bridge reads the game with (`bridge/src/capture-helper.ps1` in the install folder). It only reads the game window's position and the pixels in its corner. Allow that file in your security software, or ask whoever manages the PC to, then restart the bridge.
+On Windows, if `t3code-wow status --log` shows a capture helper error that names your security software or a blocked script, that software stopped the PowerShell script the bridge reads the game with (`bridge/src/capture-helper.ps1` in the install folder). It only reads the game window's position and the pixels in its corner. Allow that file in your security software, or ask whoever manages the PC to, then restart the bridge. If the error says the script "is not digitally signed" or that "running scripts is disabled on this system", the PC's script policy is set by its administrator (Group Policy), and only they can allow it.
 
 If the tracker says live updates are paused, do a `/reload`: the game allows a fixed number of updates per session (1,200 by default), which normally lasts many hours.
 

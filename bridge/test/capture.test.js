@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import fs from 'node:fs';
-import { pickMacWindow, pickWindowsWindow, StripCapture, WinHelper } from '../src/capture.js';
+import { pickMacWindow, pickWindowsWindow, StripCapture, WinHelper, helperErrorText } from '../src/capture.js';
 
 const screens = [
   { x: 0, y: 0, width: 1512, height: 982, scale: 2 }, // built-in Retina, the primary
@@ -134,4 +134,17 @@ test('Windows helper: a helper that dies reports its error, rejects what was wai
   await assert.rejects(a, /capture helper exited \(1\): Add-Type : blocked by policy/);
   await assert.rejects(helper.request('windows 5'), /retrying in 5 s/);
   assert.equal(fake.spawned.length, 1);
+});
+
+test("a blocked helper's PowerShell error reads as one sentence, even where PowerShell wrapped it mid-word", () => {
+  // Windows PowerShell 5.1 refusing the script under an AllSigned policy: wrapped at 120 columns,
+  // then followed by its CategoryInfo lines.
+  const stderr = [
+    String.raw`File C:\Program Files\t3code-wow\bridge\src\capture-helper.ps1 cannot be loaded. The file C:\Program Files\t3code-wow\br`,
+    String.raw`idge\src\capture-helper.ps1 is not digitally signed. You cannot run this script on the current system.`,
+    '    + CategoryInfo          : SecurityError: (:) [], ParentContainsErrorRecordException',
+    '    + FullyQualifiedErrorId : UnauthorizedAccess',
+    '',
+  ].join('\r\n');
+  assert.equal(helperErrorText(stderr), String.raw`File C:\Program Files\t3code-wow\bridge\src\capture-helper.ps1 cannot be loaded. The file C:\Program Files\t3code-wow\bridge\src\capture-helper.ps1 is not digitally signed. You cannot run this script on the current system.`);
 });
