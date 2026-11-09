@@ -98,8 +98,10 @@ for (const lua of LUAS) {
     assert.equal(commands.length, 0);
   });
 }
-// Show the gap rather than dropping these tests silently.
-if (!LUAS.length) test('Lua crypto and addon strip match Node', { skip: NO_LUA }, () => {});
+// Show the gap rather than dropping these tests silently: both interpreters must agree with Node.
+for (const lua of ['lua5.1', 'luajit'].filter((l) => !LUAS.includes(l))) {
+  test(`Lua crypto and addon strip match Node (${lua})`, { skip: `${NO_LUA} (${lua})` }, () => {});
+}
 
 test('a full-size message still fits once sealed', () => {
   assert.ok(MAX_PAYLOAD - OVERHEAD >= 2000 + 200);
