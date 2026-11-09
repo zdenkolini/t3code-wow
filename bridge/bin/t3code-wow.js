@@ -8,7 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Bridge, STATE_DIR, VERSION } from '../src/bridge.js';
 import { CONFIG_DIR, mintToken, readToken, tokenClaims, findT3Cli, revokeSession } from '../src/auth.js';
-import { findWowInstalls, addonsDir as addonsDirOf, findWowProcess } from '../src/wow.js';
+import { findWowInstalls, foreverFolder, addonsDir as addonsDirOf, findWowProcess } from '../src/wow.js';
 import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
 import { StripCapture, SCREEN_PERMISSION_HELP } from '../src/capture.js';
 import { decodeImage } from '../src/codec.js';
@@ -21,6 +21,7 @@ const MAC = process.platform === 'darwin';
 const DATA_DIR = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 't3code-wow');
 const BIN_LINK = path.join(os.homedir(), '.local/bin/t3code-wow');
 const DEFAULT_SLOTS = 1200;
+const INSTALLER = process.platform === 'win32' ? 'the installer' : './install.sh';
 
 const C = process.stdout.isTTY
   ? { b: (s) => `\x1b[1m${s}\x1b[0m`, g: (s) => `\x1b[32m${s}\x1b[0m`, y: (s) => `\x1b[33m${s}\x1b[0m`, r: (s) => `\x1b[31m${s}\x1b[0m`, d: (s) => `\x1b[2m${s}\x1b[0m` }
@@ -71,25 +72,31 @@ function copyDir(src, dst) {
   }
 }
 
+const wowFlag = (args) => args.wow || args['wow-dir'];
+
+// The game folder given on the command line wins over the saved one.
+function addonsDirFor(args, cfg) {
+  return (!wowFlag(args) && cfg.addonsDir) || addonsDirOf(resolveWowDir(args, cfg));
+}
+
 function resolveWowDir(args, cfg) {
-  if (args.wow) {
-    const dir = path.resolve(String(args.wow));
-    if (fs.existsSync(path.join(dir, '_forever_'))) return path.join(dir, '_forever_');
-    return dir;
-  }
+  const given = wowFlag(args);
+  if (given) return foreverFolder(path.resolve(String(given)));
   if (cfg.wowDir && fs.existsSync(cfg.wowDir)) return cfg.wowDir;
   const { forever, wowOnly, prefixes } = findWowInstalls();
   if (forever.length > 1) console.log(C.y(`Found several WoW: Forever installs, using the first (pick one with --wow):\n  ${forever.join('\n  ')}`));
   if (forever.length) return forever[0];
-  const where = '\nIf it\'s somewhere else, pass --wow "/path/to/World of Warcraft".';
+  const where = process.platform === 'win32'
+    ? '\nIf it\'s somewhere else, pass --wow-dir "D:\\Games\\World of Warcraft".'
+    : '\nIf it\'s somewhere else, pass --wow "/path/to/World of Warcraft".';
   if (wowOnly.length) {
-    throw new Error(`found World of Warcraft at ${wowOnly[0]}, but not WoW: Forever. Install Forever from Battle.net (it's a separate game version), launch it once, then run ./install.sh again.${where}`);
+    throw new Error(`found World of Warcraft at ${wowOnly[0]}, but not WoW: Forever. Install Forever from Battle.net (it's a separate game version), launch it once, then run ${INSTALLER} again.${where}`);
   }
   if (prefixes.length) {
-    throw new Error(`found Battle.net (${prefixes[0]}) but no World of Warcraft. Install WoW: Forever from Battle.net, launch it once, then run ./install.sh again.${where}`);
+    throw new Error(`found Battle.net (${prefixes[0]}) but no World of Warcraft. Install WoW: Forever from Battle.net, launch it once, then run ${INSTALLER} again.${where}`);
   }
-  if (MAC) throw new Error(`couldn't find World of Warcraft. Install Battle.net from blizzard.com, install WoW: Forever from it and launch it once, then run ./install.sh again.${where}`);
-  throw new Error(`couldn't find Battle.net. On Omarchy, install it with omarchy-install-gaming-battlenet, install WoW: Forever from it and launch it once, then run ./install.sh again.${where}`);
+  if (MAC || process.platform === 'win32') throw new Error(`couldn't find World of Warcraft. Install Battle.net from blizzard.com, install WoW: Forever from it and launch it once, then run ${INSTALLER} again.${where}`);
+  throw new Error(`couldn't find Battle.net. On Omarchy, install it with omarchy-install-gaming-battlenet, install WoW: Forever from it and launch it once, then run ${INSTALLER} again.${where}`);
 }
 
 // The bridge runs as a systemd user service on Linux and a launchd agent on macOS.
@@ -335,7 +342,7 @@ ${C.b('From here')}
 
 function cmdSync(args) {
   const cfg = readConfig();
-  const addonsDir = cfg.addonsDir || addonsDirOf(resolveWowDir(args, cfg));
+  const addonsDir = addonsDirFor(args, cfg);
   // The game only discovers new addon folders and sound files when it starts.
   const freshAddon = !fs.existsSync(path.join(addonsDir, ADDON, `${ADDON}.toc`));
   const dst = syncAddon(addonsDir);
@@ -344,7 +351,7 @@ function cmdSync(args) {
 
 async function cmdRun(args) {
   const cfg = readConfig();
-  const addonsDir = cfg.addonsDir || addonsDirOf(resolveWowDir(args, cfg));
+  const addonsDir = addonsDirFor(args, cfg);
   const bridge = new Bridge({ addonsDir, config: { ...cfg, verbose: args.verbose || cfg.verbose } });
   const stop = () => {
     bridge.stop();
@@ -439,13 +446,13 @@ async function cmdUninstall(args) {
     done('Stopped and removed the bridge service');
   }
 
-  let wowDir = cfg.wowDir;
+  let wowDir = wowFlag(args) ? foreverFolder(path.resolve(String(wowFlag(args)))) : cfg.wowDir;
   if (!wowDir) {
     try {
       wowDir = findWowInstalls().forever[0];
     } catch {}
   }
-  const addonsDir = cfg.addonsDir || (wowDir && addonsDirOf(wowDir));
+  const addonsDir = (!wowFlag(args) && cfg.addonsDir) || (wowDir && addonsDirOf(wowDir));
   if (addonsDir && fs.existsSync(addonsDir)) {
     const n = new SlotBank(addonsDir).removeSlots(0);
     fs.rmSync(path.join(addonsDir, ADDON), { recursive: true, force: true });
@@ -589,7 +596,7 @@ async function cmdEnv(args) {
 function help() {
   console.log(`${C.b('t3code-wow')} ${VERSION} — T3 Code inside World of Warcraft: Forever
 
-  t3code-wow install [--wow DIR] [--slots N] [--no-service]
+  t3code-wow install [--wow DIR | --wow-dir DIR] [--slots N] [--no-service]
                      Install the addon, its live-update slots and the bridge service
   t3code-wow status [--log] [--json]
                      Show what the bridge sees
