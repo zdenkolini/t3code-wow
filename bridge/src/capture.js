@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { decodeImage, parsePPM, parseBMP, CELLS_PER_ROW, MAX_ROWS } from './codec.js';
 
 // A service may start before the session exports WAYLAND_DISPLAY; find the socket.
@@ -158,9 +159,10 @@ export function pickMacWindow(info, pid) {
 }
 
 // ---------------------------------------------------------------------------
-// Windows: a long-lived PowerShell process hosting inline C# (GDI), see WinHelper below.
+// Windows: a long-lived PowerShell process running capture-helper.ps1 (C# over GDI), see WinHelper below.
 
-// The class of Forever's game window, which finds it when the pid isn't known.
+// The class of Forever's game window, which finds it when the pid isn't known. The
+// helper gets it as an argument.
 const WOW_WINDOW_CLASS = 'waApplication Window';
 
 // The game window from the helper's window list. Client areas are in physical pixels
@@ -181,150 +183,34 @@ export function pickWindowsWindow(info, pid) {
   return { found: true, visible: shown(win), x: c.x, y: c.y, width: c.width, height: c.height, scale: (win.dpi || 96) / 96, fullscreen };
 }
 
-// Compiled by PowerShell's Add-Type when the helper starts (the C# compiler ships with
-// Windows' .NET Framework), so there's nothing to build or install. It answers one
-// request per stdin line with one stdout line, "ok <data>" or "err <message>":
-//   windows <pid>           JSON window list for pickWindowsWindow
-//   grab <x> <y> <w> <h>    base64 BMP of that screen rectangle (physical pixels)
-//   shot <x> <y> <w> <h> <outW> <outH>   base64 JPEG, scaled to outW x outH
-// The thread is per-monitor DPI aware, so every coordinate is in physical pixels, across
-// all monitors and scale factors.
-const WIN_HELPER_CS = String.raw`
-using System;
-using System.IO;
-using System.Text;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
-
-public static class T3Strip {
-  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
-  [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
-  [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
-  const int DWMWA_CLOAKED = 14, GWL_EXSTYLE = -20, WS_EX_TOOLWINDOW = 0x80;
-  const uint MONITOR_DEFAULTTONEAREST = 2;
-  static readonly IntPtr PER_MONITOR_AWARE_V2 = new IntPtr(-4);
-  delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
-  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
-  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
-  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
-  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
-  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd, StringBuilder name, int max);
-  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hwnd, int index);
-  [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
-  [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
-  [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
-  [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
-  [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
-  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
-
-  static string Rect(int x, int y, int w, int h) {
-    return "{\"x\":" + x + ",\"y\":" + y + ",\"width\":" + w + ",\"height\":" + h + "}";
-  }
-
-  // Top-level windows owned by pid, or with the game's window class.
-  static string Windows(uint wanted) {
-    var json = new StringBuilder("{\"windows\":[");
-    bool first = true;
-    EnumWindows(delegate (IntPtr h, IntPtr l) {
-      uint pid;
-      GetWindowThreadProcessId(h, out pid);
-      var cls = new StringBuilder(256);
-      GetClassName(h, cls, cls.Capacity);
-      if (pid != wanted && cls.ToString() != "${WOW_WINDOW_CLASS}") return true;
-      RECT rc; GetClientRect(h, out rc);
-      var origin = new POINT(); ClientToScreen(h, ref origin);
-      int cloaked; if (DwmGetWindowAttribute(h, DWMWA_CLOAKED, out cloaked, 4) != 0) cloaked = 0;
-      var mi = new MONITORINFO(); mi.cbSize = Marshal.SizeOf(mi);
-      GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), ref mi);
-      var m = mi.rcMonitor;
-      if (!first) json.Append(',');
-      first = false;
-      json.Append("{\"pid\":" + pid + ",\"cls\":\"" + cls.ToString().Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
-      json.Append(",\"visible\":" + (IsWindowVisible(h) ? "true" : "false"));
-      json.Append(",\"iconic\":" + (IsIconic(h) ? "true" : "false"));
-      json.Append(",\"cloaked\":" + (cloaked != 0 ? "true" : "false"));
-      json.Append(",\"tool\":" + ((GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0 ? "true" : "false"));
-      json.Append(",\"dpi\":" + GetDpiForWindow(h));
-      json.Append(",\"client\":" + Rect(origin.X, origin.Y, rc.Right - rc.Left, rc.Bottom - rc.Top));
-      json.Append(",\"monitor\":" + Rect(m.Left, m.Top, m.Right - m.Left, m.Bottom - m.Top) + "}");
-      return true;
-    }, IntPtr.Zero);
-    return json.Append("]}").ToString();
-  }
-
-  static Bitmap Copy(int x, int y, int w, int h) {
-    var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
-    using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(x, y, 0, 0, new Size(w, h), CopyPixelOperation.SourceCopy);
-    return bmp;
-  }
-
-  static string Grab(int x, int y, int w, int h) {
-    using (var bmp = Copy(x, y, w, h)) using (var ms = new MemoryStream()) {
-      bmp.Save(ms, ImageFormat.Bmp);
-      return Convert.ToBase64String(ms.ToArray());
-    }
-  }
-
-  static string Shot(int x, int y, int w, int h, int ow, int oh) {
-    using (var bmp = Copy(x, y, w, h)) using (var outBmp = new Bitmap(ow, oh, PixelFormat.Format24bppRgb)) using (var ms = new MemoryStream()) {
-      using (var g = Graphics.FromImage(outBmp)) {
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.DrawImage(bmp, 0, 0, ow, oh);
-      }
-      ImageCodecInfo jpeg = null;
-      foreach (var c in ImageCodecInfo.GetImageEncoders()) if (c.MimeType == "image/jpeg") jpeg = c;
-      using (var ps = new EncoderParameters(1)) {
-        ps.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
-        outBmp.Save(ms, jpeg, ps);
-      }
-      return Convert.ToBase64String(ms.ToArray());
-    }
-  }
-
-  public static void Serve() {
-    SetThreadDpiAwarenessContext(PER_MONITOR_AWARE_V2);
-    var input = new StreamReader(Console.OpenStandardInput(), Encoding.ASCII);
-    var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
-    output.NewLine = "\n";
-    output.AutoFlush = true;
-    string line;
-    while ((line = input.ReadLine()) != null) {
-      string reply;
-      try {
-        var a = line.Trim().Split(' ');
-        Func<int, int> n = i => int.Parse(a[i]);
-        if (a[0] == "windows") reply = Windows(uint.Parse(a[1]));
-        else if (a[0] == "grab") reply = Grab(n(1), n(2), n(3), n(4));
-        else if (a[0] == "shot") reply = Shot(n(1), n(2), n(3), n(4), n(5), n(6));
-        else throw new Exception("unknown request " + a[0]);
-        reply = "ok " + reply;
-      } catch (Exception e) {
-        reply = "err " + e.Message.Replace('\r', ' ').Replace('\n', ' ');
-      }
-      output.WriteLine(reply);
-    }
-  }
-}`;
-
-const WIN_HELPER_PS = `$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
-${WIN_HELPER_CS}
-'@
-[T3Strip]::Serve()`;
+// The helper script, a readable .ps1 next to this file: security software treats a
+// script file it can scan far better than an encoded command line.
+const WIN_HELPER_SCRIPT = fileURLToPath(new URL('./capture-helper.ps1', import.meta.url));
 
 // The helper process, started on first use and kept for the bridge's lifetime: starting
 // PowerShell and compiling the C# takes about half a second, far too slow per frame. Its
 // window is hidden, and it exits when its stdin closes (that is, with the bridge).
-class WinHelper {
-  constructor() {
+// Requests are numbered and each reply carries its request's number, so a stray line
+// (a PowerShell warning, say) is logged and dropped instead of answering the wrong request.
+// PowerShell's stderr, cut down to the message: it may come wrapped in CLIXML, it wraps text at
+// 120 columns even mid-word, and it follows the message with "At line" / "CategoryInfo" lines.
+export function helperErrorText(stderr) {
+  const lines = stderr.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, '\n').replace(/_x000D__x000A_/g, '\n').split(/\r?\n/);
+  let text = '';
+  for (const line of lines) {
+    if (/^\s*(At line:|At .*:\d+ char:|\+ |\+$|CategoryInfo|FullyQualifiedErrorId)/.test(line)) continue;
+    text += line.length >= 119 ? line : `${line} `;
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+export class WinHelper {
+  constructor({ spawn: spawnProc = spawn, log = () => {} } = {}) {
+    this.spawn = spawnProc;
+    this.log = log;
     this.proc = null;
-    this.pending = []; // { resolve, reject } in request order
-    this.out = '';
-    this.err = '';
+    this.pending = new Map(); // request number -> { resolve, reject }
+    this.next = 1;
     this.warm = false; // answered once: PowerShell has started and compiled the helper
     this.failures = 0; // in a row, for the restart backoff
     this.retryAt = 0;
@@ -333,52 +219,64 @@ class WinHelper {
 
   start() {
     const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const encoded = Buffer.from(WIN_HELPER_PS, 'utf16le').toString('base64');
-    const proc = spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', encoded], {
+    // Bypass applies to this process only; the default policy would refuse any script file.
+    const proc = this.spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-File', WIN_HELPER_SCRIPT, '-WindowClass', WOW_WINDOW_CLASS], {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.proc = proc;
     this.warm = false;
-    this.out = '';
-    this.err = '';
+    // Buffers belong to this process: late output from a killed helper can't run into the next one's.
+    let out = '';
+    let err = '';
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', (d) => {
-      this.out += d;
+      out += d;
       let i;
-      while ((i = this.out.indexOf('\n')) >= 0) {
-        const line = this.out.slice(0, i).replace(/\r$/, '');
-        this.out = this.out.slice(i + 1);
-        const p = this.pending.shift();
-        if (!p) continue;
-        if (line.startsWith('ok ')) p.resolve(line.slice(3));
-        else p.reject(new Error(line.replace(/^err /, '')));
+      while ((i = out.indexOf('\n')) >= 0) {
+        const line = out.slice(0, i).replace(/\r$/, '');
+        out = out.slice(i + 1);
+        this.answer(line);
       }
       this.idle();
     });
     proc.stderr.setEncoding('utf8');
-    proc.stderr.on('data', (d) => (this.err = (this.err + d).slice(-2000)));
+    proc.stderr.on('data', (d) => (err = (err + d).slice(-4000)));
     const fail = (why) => {
       if (this.proc !== proc) return;
       this.proc = null;
-      // PowerShell may still wrap stderr in CLIXML; the error itself is at the end.
-      const detail = this.err.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/\s+/g, ' ').trim().slice(-300);
+      const detail = helperErrorText(err);
       this.lastError = `capture helper ${why}${detail ? `: ${detail}` : ''}`;
       // A helper that keeps failing (PowerShell blocked, Add-Type refused) isn't restarted on every poll.
       this.failures++;
       this.retryAt = Date.now() + Math.min(60000, 5000 * 2 ** (this.failures - 1));
-      for (const p of this.pending.splice(0)) p.reject(new Error(this.lastError));
+      const waiting = [...this.pending.values()];
+      this.pending.clear();
+      for (const p of waiting) p.reject(new Error(this.lastError));
     };
     proc.on('error', (e) => fail(`failed to start (${e.message})`));
     proc.on('exit', (code) => fail(`exited (${code})`));
     proc.stdin.on('error', () => {});
   }
 
+  // One stdout line: "<n> ok <data>" or "<n> err <message>" for request n.
+  answer(line) {
+    const m = /^(\d+) (ok|err)(?: (.*))?$/.exec(line);
+    const p = m && this.pending.get(Number(m[1]));
+    if (!p) {
+      if (line.trim()) this.log(`capture helper: ignored a line that answers no request: ${line.slice(0, 200)}`);
+      return;
+    }
+    this.pending.delete(Number(m[1]));
+    if (m[2] === 'ok') p.resolve(m[3] ?? '');
+    else p.reject(new Error(m[3] || 'capture helper error'));
+  }
+
   // While nothing is pending, don't let the helper keep a short command (probe) alive.
   idle() {
     if (!this.proc) return;
     const streams = [this.proc, this.proc.stdin, this.proc.stdout, this.proc.stderr];
-    for (const s of streams) this.pending.length ? s.ref?.() : s.unref?.();
+    for (const s of streams) this.pending.size ? s.ref?.() : s.unref?.();
   }
 
   request(line, timeout = 4000) {
@@ -388,6 +286,7 @@ class WinHelper {
       this.start();
     }
     const proc = this.proc;
+    const id = this.next++;
     // The first request also waits for PowerShell to start and compile the helper.
     if (!this.warm) timeout += 20000;
     return new Promise((resolve, reject) => {
@@ -395,7 +294,7 @@ class WinHelper {
         proc.kill();
         reject(new Error('capture helper timed out'));
       }, timeout);
-      this.pending.push({
+      this.pending.set(id, {
         resolve: (v) => {
           clearTimeout(timer);
           this.warm = true;
@@ -408,7 +307,7 @@ class WinHelper {
         },
       });
       this.idle();
-      proc.stdin.write(`${line}\n`);
+      proc.stdin.write(`${id} ${line}\n`);
     });
   }
 
@@ -503,7 +402,7 @@ export class StripCapture {
   }
 
   winHelper() {
-    if (!this.win) this.win = new WinHelper();
+    if (!this.win) this.win = new WinHelper({ log: this.log });
     return this.win;
   }
 
