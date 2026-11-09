@@ -221,7 +221,15 @@ const command = WIN && windowsCommand({
   script: path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js'),
 });
 // Whether this copy is the one install.ps1 put in the data folder (not a clone).
-const installedCopy = path.relative(DATA_DIR, BRIDGE_ROOT) === 'bridge';
+// Real paths, since a data folder reached through a junction or link resolves differently.
+const realPath = (p) => {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+};
+const installedCopy = path.relative(realPath(DATA_DIR), realPath(BRIDGE_ROOT)) === 'bridge';
 
 // Copy just the addon code (leaving Signals/ and generated media alone).
 function syncAddon(addonsDir) {

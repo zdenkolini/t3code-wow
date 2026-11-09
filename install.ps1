@@ -63,7 +63,7 @@ function Install-T3CodeWow([string[]]$Arguments, [string]$Checkout) {
 
 		# Stop a running bridge before replacing its files; the install below starts it again.
 		& node (Join-Path $src 'bridge\bin\t3code-wow.js') stop
-		if ($LASTEXITCODE -ne 0) { $script:InstallExit = 1; return }
+		if ($LASTEXITCODE -ne 0) { Write-Host "Couldn't stop the running bridge (see above), so nothing was replaced." -ForegroundColor Red; $script:InstallExit = 1; return }
 
 		# Copy the new files next to the old ones, then swap each folder by renaming, so a
 		# file that can't be replaced leaves the old folder in place rather than half of one.
@@ -77,17 +77,22 @@ function Install-T3CodeWow([string[]]$Arguments, [string]$Checkout) {
 				}
 				Copy-Item -LiteralPath (Join-Path $src $part) -Destination (Join-Path $dest "$part.new") -Recurse -ErrorAction Stop
 			}
-			foreach ($part in 'bridge', 'addon') {
-				$old = Join-Path $dest $part
-				if (Test-Path -LiteralPath $old) { Rename-Item -LiteralPath $old -NewName "$part.old" -ErrorAction Stop }
-				try {
-					Rename-Item -LiteralPath (Join-Path $dest "$part.new") -NewName $part -ErrorAction Stop
-				} catch {
-					if (Test-Path -LiteralPath "$old.old") { Rename-Item -LiteralPath "$old.old" -NewName $part -ErrorAction SilentlyContinue }
-					throw
+			# Both folders change together: the bridge and the addon it syncs must match.
+			$moved = @(); $placed = @()
+			try {
+				foreach ($part in 'bridge', 'addon') {
+					$old = Join-Path $dest $part
+					if (Test-Path -LiteralPath $old) { Rename-Item -LiteralPath $old -NewName "$part.old" -ErrorAction Stop; $moved += $part }
 				}
-				Remove-Item -LiteralPath "$old.old" -Recurse -Force -ErrorAction SilentlyContinue
+				foreach ($part in 'bridge', 'addon') {
+					Rename-Item -LiteralPath (Join-Path $dest "$part.new") -NewName $part -ErrorAction Stop; $placed += $part
+				}
+			} catch {
+				foreach ($part in $placed) { Remove-Item -LiteralPath (Join-Path $dest $part) -Recurse -Force -ErrorAction SilentlyContinue }
+				foreach ($part in $moved) { Rename-Item -LiteralPath (Join-Path $dest "$part.old") -NewName $part -ErrorAction SilentlyContinue }
+				throw
 			}
+			foreach ($part in 'bridge', 'addon') { Remove-Item -LiteralPath (Join-Path $dest "$part.old") -Recurse -Force -ErrorAction SilentlyContinue }
 			$replaced = $true
 		} catch {
 			foreach ($part in 'bridge', 'addon') { Remove-Item -LiteralPath (Join-Path $dest "$part.new") -Recurse -Force -ErrorAction SilentlyContinue }
@@ -99,6 +104,7 @@ function Install-T3CodeWow([string[]]$Arguments, [string]$Checkout) {
 
 	$cli = Join-Path $dest 'bridge\bin\t3code-wow.js'
 	$code = 1
+	$pass = @()
 	if ($replaced) {
 		# Windows PowerShell 5.1 passes "D:\Some Folder\" to programs so that the closing quote
 		# reads as escaped; a trailing backslash means nothing in a folder name, so drop it.
