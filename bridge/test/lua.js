@@ -12,6 +12,6 @@ export function hasLua(bin) {
 }
 
 // The first interpreter found, in order of preference, or undefined.
-export const anyLua = (bins = ['lua5.1', 'luajit', 'lua']) => bins.find(hasLua);
+export const anyLua = () => ['lua5.1', 'luajit', 'lua'].find(hasLua);
 
 export const NO_LUA = 'no lua interpreter';

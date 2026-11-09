@@ -156,6 +156,7 @@ export function pickMacWindow(info, pid) {
   return { found: true, visible: win.onscreen, x: b.X, y: b.Y, width: b.Width, height: b.Height, scale: screen?.scale || 1 };
 }
 
+// Built at import time, so getuid is optional: Windows doesn't have it, and only macOS shows this.
 export const SCREEN_PERMISSION_HELP =
   `macOS hasn't let the bridge record the screen. Open System Settings > Privacy & Security > Screen & System Audio Recording, turn on ${path.basename(process.execPath)} (${process.execPath}), then restart the bridge with: launchctl kickstart -k gui/${process.getuid?.()}/t3code-wow`;
 
