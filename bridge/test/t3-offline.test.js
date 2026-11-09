@@ -23,13 +23,13 @@ test('a closed local T3 Code says to open it, and the client reconnects on its o
   // Never opened since boot: no runtime file.
   client.start();
   await waitForState(client, 'offline');
-  assert.match(client.error, /open T3 Code/i);
+  assert.equal(client.error, LOCAL_DOWN);
 
   // Closed again: the runtime file still names the old, now dead, port.
   writeRuntime(`http://127.0.0.1:${await closedPort()}`);
   await waitForState(client, 'connecting');
   await waitForState(client, 'offline');
-  assert.match(client.error, /open T3 Code/i);
+  assert.equal(client.error, LOCAL_DOWN);
 
   // Opened again, on a new port.
   const server = await fakeT3();

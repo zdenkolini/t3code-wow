@@ -26,7 +26,7 @@ export function readRuntime() {
 
 // T3 Code serves only while it's open (on Windows, only while the desktop app runs):
 // no runtime file yet, or nothing listening at the address it last wrote.
-export const LOCAL_DOWN = "T3 Code isn't running on this computer. Open T3 Code; the bridge reconnects on its own.";
+export const LOCAL_DOWN = "T3 Code isn't running on this computer. Start it, and the bridge reconnects on its own.";
 
 function serverDown(err) {
   const codes = [err?.code, err?.cause?.code, ...(err?.cause?.errors || []).map((e) => e.code)];
@@ -118,9 +118,11 @@ export class T3Client extends EventEmitter {
       this.origin = await this.originProvider();
       const runtime = { origin: this.origin };
       const token = await this.tokenProvider();
+      // A server that accepts the connection and never answers would otherwise hold this forever.
       const res = await fetch(new URL('/api/auth/websocket-ticket/rpc', runtime.origin), {
         method: 'POST',
         headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(15000),
       });
       if (res.status === 401) {
         this.emit('unauthorized');
@@ -133,7 +135,13 @@ export class T3Client extends EventEmitter {
       url.searchParams.set('wsTicket', ticket);
       await this.open(url);
     } catch (err) {
-      this.setState('offline', this.isLocal && serverDown(err) ? LOCAL_DOWN : err.message);
+      const down = this.isLocal && serverDown(err);
+      // The short message hides where the bridge looked; say it once, when T3 Code goes away.
+      if (down && !this.downLogged) {
+        this.downLogged = true;
+        this.log(`T3 Code not reachable: ${err.path ? `no ${err.path}` : `nothing answers at ${this.origin || 'its address'}`}`);
+      }
+      this.setState('offline', down ? LOCAL_DOWN : err.message);
       this.scheduleReconnect();
     }
   }
@@ -153,6 +161,7 @@ export class T3Client extends EventEmitter {
       ws.onopen = () => {
         opened = true;
         this.backoff = 1000;
+        this.downLogged = false;
         this.setState('connected');
         this.subscribeAll();
         resolve();

@@ -38,6 +38,7 @@ export class Voice {
     this.ttsCommand = ttsCommand; // e.g. "piper-say" or "my-tts --stdin"; text arrives on stdin
     this.rate = rate;
     this.log = log;
+    if (this.unavailable && ttsCommand) log(`tts.command is ignored: speech is ${this.unavailable}`);
     this.current = null;
     this.dictating = false;
   }
