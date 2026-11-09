@@ -11,9 +11,9 @@ import { markdownToWow, markdownToSpeech } from '../src/format.js';
 import { RS, US } from '../src/codec.js';
 import { seal } from '../src/strip-crypto.js';
 import crypto from 'node:crypto';
-import { anyLua, NO_LUA } from './lua.js';
+import { lua51, NO_LUA } from './lua.js';
 
-const lua = anyLua();
+const lua = lua51();
 
 let currentKeys = null; // the latest fakeBridge's strip keys: frame() seals with them
 

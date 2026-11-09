@@ -10,7 +10,7 @@ import { deriveKeys, seal, open, loadOrCreateKey, OVERHEAD } from '../src/strip-
 import { decodeImage, renderCells, MAX_PAYLOAD } from '../src/codec.js';
 import { parseFrame } from '../src/bridge.js';
 import { luaAssignment } from '../src/luaser.js';
-import { hasLua } from './lua.js';
+import { hasLua, NO_LUA } from './lua.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 // LuaJIT's bit library returns signed numbers; tools/bitstub.lua (plain Lua 5.1)
@@ -97,6 +97,10 @@ for (const lua of LUAS) {
     assert.equal(hello.view, '');
     assert.equal(commands.length, 0);
   });
+}
+// Show the gap rather than dropping these tests silently: both interpreters must agree with Node.
+for (const lua of ['lua5.1', 'luajit'].filter((l) => !LUAS.includes(l))) {
+  test(`Lua crypto and addon strip match Node (${lua})`, { skip: `${NO_LUA} (${lua})` }, () => {});
 }
 
 test('a full-size message still fits once sealed', () => {
