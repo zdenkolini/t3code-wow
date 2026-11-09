@@ -30,7 +30,10 @@ const starts = (dir) => {
 // Start a supervisor that is stopped after the test even if it fails, so a failure
 // can't leave it listening and keep the test process alive.
 function supervisor(t, opts) {
-  t.after(() => askSupervisor(opts.stateDir, 'stop'));
+  t.after(async () => {
+    await askSupervisor(opts.stateDir, 'stop');
+    fs.rmSync(opts.stateDir, { recursive: true, force: true });
+  });
   return supervise(opts);
 }
 
@@ -56,12 +59,12 @@ test('autostart records the real node binary, not a version manager\'s per-shell
 
 test('the logon command starts the supervisor with the recorded node in a hidden console', () => {
   // conhost --headless gives node.exe a console that is never shown, so nothing flashes up at logon.
-  const cmd = autostartCommand({
-    conhost: 'C:\\Windows\\System32\\conhost.exe',
-    node: 'C:\\Program Files\\nodejs\\node.exe',
-    script: 'C:\\Users\\Jo Smith\\.local\\share\\t3code-wow\\bin\\t3code-wow.js',
-  });
-  assert.equal(cmd, '"C:\\Windows\\System32\\conhost.exe" --headless "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\Jo Smith\\.local\\share\\t3code-wow\\bin\\t3code-wow.js" supervise');
+  // Paths with spaces must survive Windows' command-line splitting (no quotes inside paths).
+  const conhost = 'C:\\Windows\\System32\\conhost.exe';
+  const node = 'C:\\Program Files\\nodejs\\node.exe';
+  const script = 'C:\\Users\\Jo Smith\\.local\\share\\t3code-wow\\bin\\t3code-wow.js';
+  const argv = [...autostartCommand({ conhost, node, script }).matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]);
+  assert.deepEqual(argv, [conhost, '--headless', node, script, 'supervise']);
 });
 
 test('the supervisor starts the bridge again when it exits', async (t) => {

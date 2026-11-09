@@ -7,6 +7,11 @@
 // service runs in session 0 and can't see the game window. The Run entry needs no
 // elevation and starts in the desktop session; the supervisor does the restarting,
 // like systemd's Restart=always or launchd's KeepAlive.
+//
+// Ending the supervisor also ends the bridge: Node puts its children in a job object
+// that Windows closes with it. The bridge stays down until `t3code-wow restart` or the
+// next logon, and `t3code-wow status` says so. (A detached bridge would survive, but it
+// would have no console, and every console program it runs would flash a window.)
 
 import fs from 'node:fs';
 import net from 'node:net';
@@ -137,17 +142,18 @@ export async function supervise({ node = process.execPath, script, args = ['run'
       clearTimeout(timer);
       if (!child) return finish();
       // `t3code-wow run` stops cleanly when its supervisor disconnects; kill it if it doesn't.
-      if (child.connected) child.disconnect();
       const proc = child;
+      if (proc.connected) proc.disconnect();
       setTimeout(() => proc.kill(), 5000).unref();
     };
     server.on('connection', (sock) => {
       let buf = '';
       sock.setEncoding('utf8');
       sock.on('error', () => {});
-      sock.on('data', (d) => {
+      sock.on('data', function onData(d) {
         buf += d;
         if (!buf.includes('\n')) return;
+        sock.off('data', onData);
         const command = buf.trim();
         if (command === 'stop') {
           waiting.push(sock);
@@ -179,11 +185,21 @@ export function windowsAutostart({ name = 't3code-wow', script, stateDir, node =
     process.stderr.write(`The bridge didn't start; see ${path.join(stateDir, 'bridge.log')}\n`);
     return false;
   };
+  // Stop a running supervisor; false if one still answers afterwards.
+  const stop = async () => {
+    if (!(await askSupervisor(stateDir, 'status', 2000))) return true;
+    await askSupervisor(stateDir, 'stop');
+    if (!(await askSupervisor(stateDir, 'status', 2000))) return true;
+    process.stderr.write('The running bridge didn\'t stop. End its node.exe processes in Task Manager, then try again.\n');
+    return false;
+  };
   return {
     name,
     kind: 'startup app',
     installed: () => reg('query', RUN_KEY, '/v', name).status === 0,
     async install() {
+      // Windows documents a 260-character limit for Run entries.
+      if (command.length > 260) process.stderr.write(`The startup command is ${command.length} characters, over the 260 Windows allows for startup apps, so the bridge may not start at logon. Installing from a shorter folder path avoids this.\n`);
       const r = reg('add', RUN_KEY, '/v', name, '/t', 'REG_SZ', '/d', command, '/f');
       if (r.status !== 0) {
         process.stderr.write(r.stderr || `couldn't add ${name} to ${RUN_KEY}\n`);
@@ -193,12 +209,18 @@ export function windowsAutostart({ name = 't3code-wow', script, stateDir, node =
       return this.restart();
     },
     async restart() {
-      await askSupervisor(stateDir, 'stop');
-      return launch();
+      return (await stop()) && launch();
     },
     async remove() {
       reg('delete', RUN_KEY, '/v', name, '/f');
-      await askSupervisor(stateDir, 'stop');
+      return stop();
+    },
+    // One line for `t3code-wow status`.
+    async describe() {
+      if (!this.installed()) return 'Autostart: off (run the install command to start the bridge at logon)';
+      const st = await askSupervisor(stateDir, 'status', 2000);
+      if (!st) return 'Autostart: on at logon, but the bridge\'s supervisor isn\'t running (start it with `t3code-wow restart`)';
+      return `Autostart: on at logon; supervisor pid ${st.pid}, bridge ${st.bridge ? `pid ${st.bridge}` : 'starting'}, restarted ${st.restarts} times`;
     },
   };
 }
