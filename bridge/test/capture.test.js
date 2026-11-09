@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickMacWindow, pickWindowsWindow, StripCapture } from '../src/capture.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import fs from 'node:fs';
+import { pickMacWindow, pickWindowsWindow, StripCapture, WinHelper } from '../src/capture.js';
 
 const screens = [
   { x: 0, y: 0, width: 1512, height: 982, scale: 2 }, // built-in Retina, the primary
@@ -62,4 +65,66 @@ test('Windows: without a pid, the game is found by its window class, and coverin
   const other = gw(7, 0, 0, 1200, 800, { cls: 'Chrome_WidgetWin_1' });
   const w = pickWindowsWindow({ windows: [other, gw(5, 0, 0, 3840, 2160)] }, undefined);
   assert.deepEqual([w.found, w.width, w.fullscreen], [true, 3840, true]);
+});
+
+// A stand-in for the PowerShell helper: records request lines, and lets the test write its stdout.
+function fakeHelper() {
+  const fake = { lines: [], spawned: [] };
+  fake.spawn = (cmd, args) => {
+    const proc = new EventEmitter();
+    proc.stdin = new PassThrough();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.kill = () => proc.emit('exit', null);
+    proc.stdin.setEncoding('utf8');
+    proc.stdin.on('data', (d) => fake.lines.push(...d.split('\n').filter(Boolean)));
+    fake.proc = proc;
+    fake.spawned.push(args);
+    return proc;
+  };
+  fake.say = (text) => fake.proc.stdout.write(`${text}\n`);
+  return fake;
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+test('Windows helper: replies go to the request with their number, and stray lines are dropped', async () => {
+  const fake = fakeHelper();
+  const logged = [];
+  const helper = new WinHelper({ spawn: fake.spawn, log: (m) => logged.push(m) });
+  const a = helper.request('windows 5');
+  const b = helper.request('grab 0 0 4 4');
+  await tick();
+  const [ida, idb] = fake.lines.map((l) => l.split(' ')[0]);
+  assert.deepEqual(fake.lines.map((l) => l.split(' ').slice(1).join(' ')), ['windows 5', 'grab 0 0 4 4']);
+  assert.notEqual(ida, idb);
+  fake.say('WARNING: something PowerShell printed');
+  fake.say(`${idb} ok bbbb`);
+  fake.say(`${ida} err Access is denied.`);
+  assert.equal(await b, 'bbbb');
+  await assert.rejects(a, /Access is denied\./);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /WARNING: something PowerShell printed/);
+});
+
+test('Windows helper: starts the script file that ships next to capture.js', async () => {
+  const fake = fakeHelper();
+  const helper = new WinHelper({ spawn: fake.spawn });
+  helper.request('windows 5').catch(() => {});
+  const args = fake.spawned[0];
+  const script = args[args.indexOf('-File') + 1];
+  assert.ok(fs.existsSync(script), script);
+  fake.proc.emit('exit', 0);
+});
+
+test('Windows helper: a helper that dies reports its error, rejects what was waiting and backs off', async () => {
+  const fake = fakeHelper();
+  const helper = new WinHelper({ spawn: fake.spawn });
+  const a = helper.request('windows 5');
+  fake.proc.stderr.write('#< CLIXML\r\n<Objs><S S="Error">Add-Type : blocked by policy_x000D__x000A_</S></Objs>');
+  await tick();
+  fake.proc.emit('exit', 1);
+  await assert.rejects(a, /capture helper exited \(1\): Add-Type : blocked by policy/);
+  await assert.rejects(helper.request('windows 5'), /retrying in 5 s/);
+  assert.equal(fake.spawned.length, 1);
 });
