@@ -472,7 +472,7 @@ async function cmdUninstall(args) {
   // Revoke the sessions the bridge was given, here and on other machines.
   const claims = tokenClaims(readToken() || '');
   if (claims?.sid && findT3Cli()) {
-    if (revokeSession(claims.sid)) done('Revoked the bridge\'s T3 Code session');
+    if (await revokeSession(claims.sid)) done('Revoked the bridge\'s T3 Code session');
     else warn(`Couldn't revoke the bridge's T3 Code session; remove it with \`t3 auth session list\` (${claims.sid}).`);
   }
   for (const e of cfg.environments || []) {

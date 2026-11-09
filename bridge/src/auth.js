@@ -1,7 +1,7 @@
 // The bridge's T3 session token. Minted with the user's own `t3` CLI, stored owner-only
 // under ~/.config/t3code-wow, renewed a week before it expires.
 
-import { execFile, execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,9 +57,9 @@ function findWindowsT3Cli(env, home) {
   return candidates.find((c) => c && fs.existsSync(c)) || null;
 }
 
-export function mintToken({ label = 'WoW bridge' } = {}) {
+export async function mintToken({ label = 'WoW bridge' } = {}) {
   const cli = findT3Cli();
-  if (!cli) return Promise.reject(new Error('could not find the `t3` command; open T3 Code once so it installs it'));
+  if (!cli) throw new Error('could not find the `t3` command; open T3 Code once so it installs it');
   const args = [
     'auth', 'session', 'issue',
     '--scope', 'orchestration:read',
@@ -68,38 +68,54 @@ export function mintToken({ label = 'WoW bridge' } = {}) {
     '--label', label,
     '--token-only',
   ];
-  return new Promise((resolve, reject) => {
-    const [file, argv, opts] = t3Command(cli, args);
-    execFile(file, argv, { ...opts, timeout: 120000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`t3 auth session issue failed: ${(stderr || err.message).trim()}`));
-      const token = stdout.split('\n').map((s) => s.trim()).filter(Boolean).pop();
-      if (!token || !tokenClaims(token)) return reject(new Error('t3 auth session issue printed no token'));
-      fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-      // Lock the new token down before it replaces the old one, so a failure keeps the old token.
-      const tmp = `${TOKEN_FILE}.new`;
-      try {
-        fs.writeFileSync(tmp, token, { mode: 0o600 });
-        ownerOnly(tmp);
-        fs.renameSync(tmp, TOKEN_FILE);
-      } catch (e) {
-        fs.rmSync(tmp, { force: true });
-        revokeSession(tokenClaims(token).sid, cli);
-        return reject(e);
-      }
-      resolve(token);
+  const [file, argv, opts] = t3Command(cli, args);
+  const stdout = await new Promise((resolve, reject) => {
+    execFile(file, argv, { ...opts, timeout: 120000 }, (err, out, stderr) => {
+      if (err) reject(new Error(`t3 auth session issue failed: ${(stderr || err.message).trim()}`));
+      else resolve(out);
     });
   });
+  const token = stdout.split('\n').map((s) => s.trim()).filter(Boolean).pop();
+  if (!token || !tokenClaims(token)) throw new Error('t3 auth session issue printed no token');
+  fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  // Lock the new token down before it replaces the old one, so a failure keeps the old token.
+  const tmp = `${TOKEN_FILE}.new`;
+  try {
+    fs.writeFileSync(tmp, token, { mode: 0o600 });
+    ownerOnly(tmp);
+    await replace(tmp, TOKEN_FILE);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    revokeSession(tokenClaims(token).sid, cli);
+    throw e;
+  }
+  return token;
 }
 
-// Best effort; returns whether the session is gone.
-export function revokeSession(sid, cli = findT3Cli()) {
-  if (!sid || !cli) return false;
-  try {
-    const [file, argv, opts] = t3Command(cli, ['auth', 'session', 'revoke', sid]);
-    return spawnSync(file, argv, { ...opts, encoding: 'utf8', timeout: 60000 }).status === 0;
-  } catch {
-    return false;
+// Windows refuses to replace a file someone has open (a virus scan, a CLI reading the token),
+// so give them a moment before giving up.
+async function replace(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fs.renameSync(from, to);
+    } catch (e) {
+      if (attempt >= 5 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      await new Promise((r) => setTimeout(r, 100 * attempt));
+    }
   }
+}
+
+// Best effort; resolves to whether the session is gone.
+export function revokeSession(sid, cli = findT3Cli()) {
+  if (!sid || !cli) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try {
+      const [file, argv, opts] = t3Command(cli, ['auth', 'session', 'revoke', sid]);
+      execFile(file, argv, { ...opts, timeout: 60000 }, (err) => resolve(!err));
+    } catch {
+      resolve(false);
+    }
+  });
 }
 
 // Node won't run a .cmd shim directly on Windows; it has to go through cmd.exe.
