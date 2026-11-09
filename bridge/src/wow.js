@@ -1,7 +1,8 @@
 // Finding the WoW: Forever install and the running client.
 //
 // On Linux the game runs under Wine or Proton, so we look through Wine prefixes. On
-// macOS it runs natively, from /Applications by default.
+// macOS it runs natively, from /Applications by default, and on Windows natively from
+// wherever Battle.net put it.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -208,10 +209,11 @@ export function addonsDir(wowDir) {
 }
 
 // The running Forever client: { pid, startTicks } or null. startTicks (from
-// /proc/<pid>/stat, or the start time on macOS) distinguishes a restarted client
-// that happens to reuse a pid.
+// /proc/<pid>/stat, or the start time on macOS and Windows) distinguishes a restarted
+// client that happens to reuse a pid.
 export function findWowProcess() {
   if (process.platform === 'darwin') return findMacProcess();
+  if (process.platform === 'win32') return findWindowsProcess();
   let entries;
   try {
     entries = fs.readdirSync('/proc');
@@ -253,6 +255,40 @@ export function parseMacProcesses(text) {
 function findMacProcess() {
   const r = spawnSync('ps', ['-axww', '-o', 'pid=,lstart=,comm='], { encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' } });
   return r.status === 0 ? parseMacProcesses(r.stdout) : null;
+}
+
+// Windows listing from WIN_PS: "<pid>\t<start, ms since 1970 UTC>\t<path>" lines. The
+// path is empty for a process we aren't allowed to inspect.
+export function parseWindowsProcesses(text) {
+  for (const line of text.split(/\r?\n/)) {
+    const [pid, start, exe] = line.split('\t');
+    if (exe && /[\\/]_forever_[\\/]Wow\.exe$/i.test(exe.trim())) return { pid: Number(pid), startTicks: Number(start) };
+  }
+  return null;
+}
+
+// "<pid>","<pid>"… of running Wow.exe processes from `tasklist /fo csv /nh` (whose
+// "no tasks" line is localized, so only matching rows count).
+function parseTasklist(text) {
+  return [...text.matchAll(/^"Wow\.exe","(\d+)"/gim)].map((m) => Number(m[1]));
+}
+
+const WIN_PS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Process -Name Wow -ErrorAction SilentlyContinue | ForEach-Object { ($_.Id, ([DateTimeOffset]$_.StartTime).ToUnixTimeMilliseconds(), $_.Path) -join [char]9 }";
+let winProcCache = { pids: null, proc: null };
+
+// tasklist takes ~0.1 s; PowerShell, which can tell Forever from Retail by path and
+// knows the start time, takes ~0.3 s or more. The bridge checks every few seconds,
+// so PowerShell only runs when the set of Wow.exe processes changes.
+function findWindowsProcess() {
+  const sys32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  const tl = spawnSync(path.join(sys32, 'tasklist.exe'), ['/fi', 'IMAGENAME eq Wow.exe', '/fo', 'csv', '/nh'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  if (tl.status !== 0) return null;
+  const pids = parseTasklist(tl.stdout).join(',');
+  if (!pids) return (winProcCache = { pids, proc: null }).proc;
+  if (pids === winProcCache.pids) return winProcCache.proc;
+  const ps = spawnSync(path.join(sys32, 'WindowsPowerShell/v1.0/powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', WIN_PS], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  if (ps.status !== 0) return null;
+  return (winProcCache = { pids, proc: parseWindowsProcesses(ps.stdout) }).proc;
 }
 
 export function processKey(p) {

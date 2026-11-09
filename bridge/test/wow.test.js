@@ -9,7 +9,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-home-'));
 process.env.HOME = home;
 process.env.USERPROFILE = home; // os.homedir() reads this on Windows
 delete process.env.WINEPREFIX;
-const { findWowInstalls: findAny, foreverFolder, parseMacProcesses } = await import('../src/wow.js');
+const { findWowInstalls: findAny, foreverFolder, parseMacProcesses, parseWindowsProcesses } = await import('../src/wow.js');
 const findWowInstalls = () => findAny({ platform: 'linux' });
 
 function touch(p, content = '') {
@@ -138,4 +138,16 @@ test('a folder given by hand overrides detection and may name the WoW folder or 
   touch(path.join(sys, 'G/WoW/_forever_/Wow.exe'));
   assert.equal(foreverFolder(path.join(sys, 'G/WoW')), path.join(sys, 'G/WoW/_forever_'));
   assert.equal(foreverFolder(path.join(sys, 'G/WoW/_forever_')), path.join(sys, 'G/WoW/_forever_'));
+});
+
+test('picks the Forever client out of the Windows process listing', () => {
+  // "<pid>\t<start, ms since 1970>\t<path>" lines; Path is empty for a process we may not inspect.
+  const list = [
+    '9000\t1794250000000\tD:\\Games\\World of Warcraft\\_retail_\\Wow.exe',
+    '9100\t1794250100000\t',
+    '28396\t1794251390399\tD:\\World of Warcraft\\_forever_\\Wow.exe',
+  ].join('\r\n');
+  assert.deepEqual(parseWindowsProcesses(list), { pid: 28396, startTicks: 1794251390399 });
+  assert.equal(parseWindowsProcesses(list.split('\r\n').slice(0, 2).join('\r\n')), null);
+  assert.equal(parseWindowsProcesses(''), null);
 });
