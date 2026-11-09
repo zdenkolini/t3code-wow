@@ -381,6 +381,13 @@ async function cmdSupervise() {
   process.exit(0);
 }
 
+// Stop the running bridge until the next restart or logon. install.ps1 runs this before
+// it replaces the installed files; the install it runs next starts the bridge again.
+async function cmdStop() {
+  if (!service.stop) throw new Error('stop is only used by the Windows installer');
+  if (!(await service.stop())) process.exitCode = 1;
+}
+
 async function cmdRestart() {
   if (!service.installed()) throw new Error(`the bridge's ${service.kind} isn't installed; run the install command first`);
   if (await service.restart() === false) process.exitCode = 1;
@@ -648,7 +655,7 @@ function help() {
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0];
-const commands = { env: cmdEnv, install: cmdInstall, restart: cmdRestart, run: cmdRun, status: cmdStatus, supervise: cmdSupervise, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
+const commands = { env: cmdEnv, install: cmdInstall, restart: cmdRestart, run: cmdRun, status: cmdStatus, stop: cmdStop, supervise: cmdSupervise, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
 if (!cmd || args.help || !commands[cmd]) {
   help();
   if (cmd && !commands[cmd]) process.exitCode = 1;
