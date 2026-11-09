@@ -13,11 +13,13 @@ import { SlotBank, ADDON, CTL_LONG } from '../src/slots.js';
 import { StripCapture, SCREEN_PERMISSION_HELP } from '../src/capture.js';
 import { decodeImage } from '../src/codec.js';
 import { identify, discoverTailscale, mintRemote, revokeRemote, saveNewToken, readTokenData, tokenFile } from '../src/envs.js';
+import { windowsAutostart, supervise } from '../src/service-windows.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const BRIDGE_ROOT = path.resolve(HERE, '..');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 const MAC = process.platform === 'darwin';
+const WIN = process.platform === 'win32';
 const DATA_DIR = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local/share'), 't3code-wow');
 const BIN_LINK = path.join(os.homedir(), '.local/bin/t3code-wow');
 const DEFAULT_SLOTS = 1200;
@@ -99,7 +101,8 @@ function resolveWowDir(args, cfg) {
   throw new Error(`couldn't find Battle.net. On Omarchy, install it with omarchy-install-gaming-battlenet, install WoW: Forever from it and launch it once, then run ${INSTALLER} again.${where}`);
 }
 
-// The bridge runs as a systemd user service on Linux and a launchd agent on macOS.
+// The bridge runs as a systemd user service on Linux, a launchd agent on macOS and a
+// supervised startup app on Windows (src/service-windows.js).
 // Commands are quiet unless they fail (enabling prints "Created symlink …", which isn't news).
 function quiet(cmd, args, { warn = true } = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8' });
@@ -126,6 +129,9 @@ const systemd = {
   name: 't3code-wow.service',
   file: path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'systemd/user', 't3code-wow.service'),
   kind: 'user service',
+  installed() {
+    return fs.existsSync(this.file);
+  },
   install() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, [
@@ -148,7 +154,7 @@ const systemd = {
     return quiet('systemctl', ['--user', 'restart', this.name]);
   },
   restart() {
-    quiet('systemctl', ['--user', 'restart', this.name]);
+    return quiet('systemctl', ['--user', 'restart', this.name]);
   },
   remove() {
     quiet('systemctl', ['--user', 'disable', '--now', this.name], { warn: false });
@@ -161,6 +167,9 @@ const launchd = {
   name: 't3code-wow',
   file: path.join(os.homedir(), 'Library/LaunchAgents/t3code-wow.plist'),
   kind: 'launch agent',
+  installed() {
+    return fs.existsSync(this.file);
+  },
   target: () => `gui/${process.getuid()}`,
   install() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -192,7 +201,7 @@ const launchd = {
     return quiet('launchctl', ['bootstrap', this.target(), this.file]);
   },
   restart() {
-    quiet('launchctl', ['kickstart', '-k', `${this.target()}/${this.name}`]);
+    return quiet('launchctl', ['kickstart', '-k', `${this.target()}/${this.name}`]);
   },
   remove() {
     quiet('launchctl', ['bootout', `${this.target()}/${this.name}`], { warn: false });
@@ -200,7 +209,7 @@ const launchd = {
   },
 };
 
-const service = MAC ? launchd : systemd;
+const service = MAC ? launchd : WIN ? windowsAutostart({ script: path.join(BRIDGE_ROOT, 'bin', 't3code-wow.js'), stateDir: STATE_DIR }) : systemd;
 
 // Copy just the addon code (leaving Signals/ and generated media alone).
 function syncAddon(addonsDir) {
@@ -255,7 +264,7 @@ async function cmdInstall(args) {
   console.log(`${C.g('✓')} T3 Code session ready ${C.d('(scoped to reading and running threads; revoke with `t3 auth session list`)')}`);
 
   if (!args['no-service']) {
-    if (!service.install()) {
+    if (!(await service.install())) {
       console.log(C.r(`✗ The bridge's ${service.kind} didn't start (the error is above). Fix that, then run \`t3code-wow install\` again.`));
       process.exitCode = 1;
       return;
@@ -359,7 +368,23 @@ async function cmdRun(args) {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  // Under the Windows supervisor, which disconnects to stop the bridge (there's no
+  // SIGTERM). Unref the channel so an error still exits, and the supervisor restarts it.
+  process.on('disconnect', stop);
+  process.channel?.unref();
   await bridge.start();
+}
+
+// What the Windows startup app runs: the bridge, restarted whenever it exits.
+async function cmdSupervise() {
+  await supervise({ script: fileURLToPath(import.meta.url), stateDir: STATE_DIR });
+  process.exit(0);
+}
+
+async function cmdRestart() {
+  if (!service.installed()) throw new Error(`the bridge's ${service.kind} isn't installed; run the install command first`);
+  if (await service.restart() === false) process.exitCode = 1;
+  else console.log(`${C.g('✓')} Restarted the bridge`);
 }
 
 function ago(ms) {
@@ -367,12 +392,15 @@ function ago(ms) {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
 }
 
-function cmdStatus(args) {
+async function cmdStatus(args) {
+  // On Windows, whether the startup app and its supervisor are up (systemd and launchd say this themselves).
+  const autostart = !args.json && service.describe ? `  ${await service.describe()}` : null;
   let st;
   try {
     st = JSON.parse(fs.readFileSync(path.join(STATE_DIR, 'status.json'), 'utf8'));
   } catch {
     console.log(C.r('The bridge has not run yet.'), 'Start it with `t3code-wow install` or `t3code-wow run`.');
+    if (autostart) console.log(autostart);
     process.exitCode = 1;
     return;
   }
@@ -381,6 +409,7 @@ function cmdStatus(args) {
   const alive = age < 10000;
   const ok = (b) => (b ? C.g('●') : C.r('●'));
   console.log(`${ok(alive)} Bridge ${st.version} ${alive ? `running (pid ${st.pid})` : `not running (last seen ${ago(age)})`}`);
+  if (autostart) console.log(autostart);
   console.log(`${ok(st.t3.state === 'connected')} T3 Code: ${st.t3.state}${st.t3.error ? ` — ${st.t3.error}` : ''} ${C.d(`(${st.t3.threads} threads, ${st.t3.origin || '?'})`)}`);
   console.log(`${ok(!!st.wow)} WoW: ${st.wow ? `running (pid ${st.wow.pid})` : 'not running'}`);
   console.log(`${ok(st.capture.state === 'ok' || st.capture.state === 'idle')} Screen link: ${st.capture.state} via ${st.capture.backend} ${C.d(`(${st.capture.decoded} frames read, ${st.capture.rejected} rejected)`)}${st.capture.lastError ? `\n    ${C.y(st.capture.lastError)}` : ''}`);
@@ -442,9 +471,9 @@ async function cmdUninstall(args) {
   const done = (msg) => console.log(`${C.g('✓')} ${msg}`);
   const warn = (msg) => console.log(`${C.y('!')} ${msg}`);
 
-  if (fs.existsSync(service.file)) {
-    service.remove();
-    done('Stopped and removed the bridge service');
+  if (service.installed()) {
+    if ((await service.remove()) === false) warn('Removed the bridge service, but the running bridge didn\'t stop (see above)');
+    else done('Stopped and removed the bridge service');
   }
 
   let wowDir = wowFlag(args) ? foreverFolder(path.resolve(String(wowFlag(args)))) : cfg.wowDir;
@@ -567,7 +596,7 @@ async function cmdEnv(args) {
     const entry = { code, id: ident.environmentId, label: ident.label || host, ssh, urls: good };
     cfg.environments = cfg.environments.filter((e) => e.id !== ident.environmentId).concat(entry);
     writeConfig(cfg);
-    if (fs.existsSync(service.file)) service.restart();
+    if (service.installed()) await service.restart();
     console.log(`${C.g('✓')} ${ident.label}'s threads will show in game within a few seconds.`);
     return;
   }
@@ -587,7 +616,7 @@ async function cmdEnv(args) {
     fs.rmSync(tokenFile(e.id), { force: true });
     cfg.environments = cfg.environments.filter((x) => x !== e);
     writeConfig(cfg);
-    if (fs.existsSync(service.file)) service.restart();
+    if (service.installed()) await service.restart();
     console.log(`${C.g('✓')} Removed ${e.label}`);
     return;
   }
@@ -601,6 +630,7 @@ function help() {
                      Install the addon, its live-update slots and the bridge service
   t3code-wow status [--log] [--json]
                      Show what the bridge sees
+  t3code-wow restart     Restart the bridge service
   t3code-wow sync        Re-copy the installed addon into the game (to update, rerun the install command)
   t3code-wow run [--verbose]
                      Run the bridge in the foreground (the service runs this)
@@ -618,7 +648,7 @@ function help() {
 
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0];
-const commands = { env: cmdEnv, install: cmdInstall, run: cmdRun, status: cmdStatus, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
+const commands = { env: cmdEnv, install: cmdInstall, restart: cmdRestart, run: cmdRun, status: cmdStatus, supervise: cmdSupervise, sync: cmdSync, probe: cmdProbe, uninstall: cmdUninstall };
 if (!cmd || args.help || !commands[cmd]) {
   help();
   if (cmd && !commands[cmd]) process.exitCode = 1;
