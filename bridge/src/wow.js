@@ -123,10 +123,80 @@ function macInstalls(system = '/') {
   return { forever, wowOnly, prefixes: battlenet };
 }
 
+// Windows: a Windows path as a path on this machine. `system` stands in for the
+// drives in tests, with one folder per drive letter ("D:\Games" is <system>/D/Games).
+function winPath(system, win) {
+  const m = /^([A-Za-z]):[\\/]*(.*)$/.exec(String(win).trim());
+  if (!m) return null;
+  const parts = m[2].split(/[\\/]+/).filter(Boolean);
+  return system ? path.join(system, m[1].toUpperCase(), ...parts) : path.join(`${m[1].toUpperCase()}:\\`, ...parts);
+}
+
+const UNINSTALL = 'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall';
+
+// One string value from `reg.exe query <key> /v <name>`: "    <name>    REG_SZ    <data>".
+export function parseRegValue(text, name) {
+  for (const line of String(text).split(/\r?\n/)) {
+    const m = /^\s+(.+?)\s{4}REG_(?:EXPAND_)?SZ\s{4}(.*)$/.exec(line);
+    if (m && m[1].toLowerCase() === name.toLowerCase()) return m[2].trim() || null;
+  }
+  return null;
+}
+
+function readRegistry(key, name) {
+  const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+  const r = spawnSync(reg, ['query', key, '/v', name], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+  return r.status === 0 ? parseRegValue(r.stdout, name) : null;
+}
+
+// Windows: Battle.net records install paths in product.db (as under Wine), its
+// default install folder in Battle.net.config, and older clients in the registry.
+// When none of those lead to Forever, look in the usual folders on every drive.
+function winInstalls({ system, env = process.env, registry = readRegistry } = {}) {
+  const dirs = [];
+  const add = (d) => d && !dirs.includes(d) && dirs.push(d);
+  const programData = winPath(system, env.PROGRAMDATA || env.ProgramData || 'C:\\ProgramData');
+  try {
+    const db = fs.readFileSync(path.join(programData, 'Battle.net/Agent/product.db'), 'latin1');
+    for (const m of db.matchAll(/[A-Za-z]:[\\/][^\x00-\x1f"]*?World of Warcraft(?=[\x00-\x1f"]|$)/g)) add(winPath(system, Buffer.from(m[0], 'latin1').toString('utf8')));
+  } catch {}
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(winPath(system, env.APPDATA), 'Battle.net/Battle.net.config'), 'utf8'));
+    const base = cfg.Client.Install.DefaultInstallPath;
+    if (base) add(winPath(system, `${base}/World of Warcraft`));
+  } catch {}
+  for (const [key, name] of [[`${UNINSTALL}\\World of Warcraft`, 'InstallLocation'], ['HKLM\\SOFTWARE\\WOW6432Node\\Blizzard Entertainment\\World of Warcraft', 'InstallPath']]) {
+    const p = registry(key, name) && winPath(system, registry(key, name));
+    // InstallPath can name the flavor folder (…\World of Warcraft\_retail_\).
+    if (p) add(/^_[a-z]+_$/i.test(path.basename(p)) ? path.dirname(p) : p);
+  }
+  const forever = [];
+  const wowOnly = [];
+  classify(dirs, forever, wowOnly);
+  if (!forever.length) {
+    const drives = system
+      ? fs.readdirSync(system).filter((d) => /^[A-Z]$/.test(d))
+      : 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter((d) => fs.existsSync(`${d}:\\`));
+    classify(drives.flatMap((d) => ['Program Files (x86)', 'Program Files', '', 'Games'].map((f) => winPath(system, `${d}:\\${f}\\World of Warcraft`))), forever, wowOnly);
+  }
+  const battlenet = [winPath(system, registry(`${UNINSTALL}\\Battle.net`, 'InstallLocation') || ''), path.join(programData, 'Battle.net')]
+    .filter((p, i, all) => p && all.indexOf(p) === i && fs.existsSync(p));
+  return { forever, wowOnly, prefixes: battlenet };
+}
+
 // { forever: [...WoW: Forever folders], wowOnly: [...WoW installs without Forever], prefixes: [...where Battle.net is] }
-export function findWowInstalls({ platform = process.platform, system } = {}) {
-  const { forever, wowOnly, prefixes } = platform === 'darwin' ? macInstalls(system) : linuxInstalls();
+// On Windows, `env` and `registry` (key, value name) => string|null stand in for the
+// real environment and registry in tests.
+export function findWowInstalls({ platform = process.platform, system, env, registry } = {}) {
+  const { forever, wowOnly, prefixes } = platform === 'darwin' ? macInstalls(system)
+    : platform === 'win32' ? winInstalls({ system, env, registry })
+    : linuxInstalls();
   return { forever, wowOnly: wowOnly.filter((w) => !forever.some((f) => f.startsWith(w + path.sep))), prefixes };
+}
+
+// A folder the player named (--wow): the World of Warcraft folder or its Forever folder.
+export function foreverFolder(dir) {
+  return fs.existsSync(path.join(dir, FLAVOR)) ? path.join(dir, FLAVOR) : dir;
 }
 
 export function findWowDirs() {
