@@ -10,7 +10,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for how changes are reviewed, and [docs/
 
 ## Platforms
 
-Linux (Omarchy, the game under Proton) and macOS (the native client) are both supported. Keep platform differences inside the module that owns them: `wow.js` (install folders and the running client: Wine prefixes and `/proc` on Linux, Battle.net's records and `ps` on macOS), `capture.js` (`grim`/`import` on Linux; CoreGraphics' window list through JXA and `screencapture` on macOS, which needs the Screen Recording permission), `voice.js` (`spd-say`/`espeak-ng`, or `say`), `envs.js` (the Tailscale CLI inside `Tailscale.app` on macOS) and the service in `bin/t3code-wow.js` (a systemd user unit or a launchd agent). On macOS, use only tools that ship with the system: nothing to compile or install.
+Linux (Omarchy, the game under Proton) and macOS (the native client) are both supported. Keep platform differences inside the module that owns them: `wow.js` (install folders and the running client: Wine prefixes and `/proc` on Linux, Battle.net's records and `ps` on macOS), `capture.js` (`grim`/`import` on Linux; CoreGraphics' window list through JXA and `screencapture` on macOS, which needs the Screen Recording permission), `voice.js` (`spd-say`/`espeak-ng`, or `say`), `envs.js` (the Tailscale CLI inside `Tailscale.app` on macOS) and the service in `bin/t3code-wow.js` (a systemd user unit or a launchd agent; on Windows, `src/service-windows.js`: a per-user Run entry that starts a supervisor through `conhost.exe --headless`, because Task Scheduler refuses registration from a non-elevated administrator). On macOS, use only tools that ship with the system: nothing to compile or install.
 
 ## Measured limits of the game client
 
