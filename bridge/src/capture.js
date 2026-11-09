@@ -310,6 +310,7 @@ public static class T3Strip {
 }`;
 
 const WIN_HELPER_PS = `$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 ${WIN_HELPER_CS}
 '@
@@ -325,12 +326,15 @@ class WinHelper {
     this.out = '';
     this.err = '';
     this.warm = false; // answered once: PowerShell has started and compiled the helper
+    this.failures = 0; // in a row, for the restart backoff
+    this.retryAt = 0;
+    this.lastError = null;
   }
 
   start() {
     const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const encoded = Buffer.from(WIN_HELPER_PS, 'utf16le').toString('base64');
-    const proc = spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+    const proc = spawn(ps, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', encoded], {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -357,8 +361,13 @@ class WinHelper {
     const fail = (why) => {
       if (this.proc !== proc) return;
       this.proc = null;
-      const detail = this.err.replace(/\s+/g, ' ').trim().slice(0, 300);
-      for (const p of this.pending.splice(0)) p.reject(new Error(`capture helper ${why}${detail ? `: ${detail}` : ''}`));
+      // PowerShell may still wrap stderr in CLIXML; the error itself is at the end.
+      const detail = this.err.replace(/#< CLIXML/g, '').replace(/<[^>]*>/g, ' ').replace(/_x000[DA]_/g, ' ').replace(/\s+/g, ' ').trim().slice(-300);
+      this.lastError = `capture helper ${why}${detail ? `: ${detail}` : ''}`;
+      // A helper that keeps failing (PowerShell blocked, Add-Type refused) isn't restarted on every poll.
+      this.failures++;
+      this.retryAt = Date.now() + Math.min(60000, 5000 * 2 ** (this.failures - 1));
+      for (const p of this.pending.splice(0)) p.reject(new Error(this.lastError));
     };
     proc.on('error', (e) => fail(`failed to start (${e.message})`));
     proc.on('exit', (code) => fail(`exited (${code})`));
@@ -373,7 +382,11 @@ class WinHelper {
   }
 
   request(line, timeout = 4000) {
-    if (!this.proc) this.start();
+    if (!this.proc) {
+      const wait = this.retryAt - Date.now();
+      if (wait > 0) return Promise.reject(new Error(`${this.lastError} (retrying in ${Math.ceil(wait / 1000)} s)`));
+      this.start();
+    }
     const proc = this.proc;
     // The first request also waits for PowerShell to start and compile the helper.
     if (!this.warm) timeout += 20000;
@@ -386,6 +399,7 @@ class WinHelper {
         resolve: (v) => {
           clearTimeout(timer);
           this.warm = true;
+          this.failures = 0;
           resolve(v);
         },
         reject: (e) => {
