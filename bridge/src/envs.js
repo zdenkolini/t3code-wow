@@ -84,6 +84,17 @@ export async function saveToken(envId, data) {
   await writeSecret(tokenFile(envId), JSON.stringify(data));
 }
 
+// For a session just minted over SSH. If it can't be saved, the old token stays in place,
+// so revoke the session nobody will use (best effort).
+export async function saveNewToken(env, fresh) {
+  try {
+    await saveToken(env.id, fresh);
+  } catch (e) {
+    revokeRemote(env.ssh, fresh.sessionId).catch(() => {});
+    throw e;
+  }
+}
+
 export function readTokenData(envId) {
   try {
     return JSON.parse(fs.readFileSync(tokenFile(envId), 'utf8'));
@@ -108,7 +119,7 @@ export function remoteTokenProvider(env, { log = () => {}, label } = {}) {
         log(`${env.label}: ${data?.token ? 'renewing' : 'minting'} its T3 session token over SSH`);
         minting = mintRemote(env.ssh, label)
           .then(async (fresh) => {
-            await saveToken(env.id, fresh);
+            await saveNewToken(env, fresh);
             return fresh;
           })
           .finally(() => {
