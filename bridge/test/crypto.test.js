@@ -11,6 +11,7 @@ import { decodeImage, renderCells, MAX_PAYLOAD } from '../src/codec.js';
 import { parseFrame } from '../src/bridge.js';
 import { luaAssignment } from '../src/luaser.js';
 import { hasLua, NO_LUA } from './lua.js';
+import { assertOwnerOnly } from './owner-only.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 // LuaJIT's bit library returns signed numbers; tools/bitstub.lua (plain Lua 5.1)
@@ -28,8 +29,7 @@ test('strip keys: one per install, kept private', () => {
   const a = loadOrCreateKey(dir);
   assert.equal(a.length, 32);
   assert.deepEqual(loadOrCreateKey(dir), a);
-  // Windows has no POSIX modes. Owner-only access there needs ACLs, which aren't set yet.
-  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'strip.key')).mode & 0o777, 0o600);
+  assertOwnerOnly(path.join(dir, 'strip.key'));
   assert.equal(deriveKeys(a).hex.length, 128);
 });
 
