@@ -23,16 +23,16 @@ export function tokenClaims(token) {
 export function findT3Cli({ platform = process.platform, env = process.env, home = os.homedir() } = {}) {
   if (platform === 'win32') return findWindowsT3Cli(env, home);
   const candidates = [
-    process.env.T3_CLI,
-    path.join(os.homedir(), '.local/bin/t3'),
-    path.join(os.homedir(), '.t3/bin/t3'),
+    env.T3_CLI,
+    path.join(home, '.local/bin/t3'),
+    path.join(home, '.t3/bin/t3'),
     '/usr/bin/t3',
     '/usr/local/bin/t3',
   ];
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
   }
-  for (const dir of (process.env.PATH || '').split(':')) {
+  for (const dir of (env.PATH || '').split(':')) {
     const p = path.join(dir, 't3');
     if (fs.existsSync(p)) return p;
   }
@@ -48,7 +48,8 @@ function findWindowsT3Cli(env, home) {
     path.join(home, '.local', 'bin', 't3.cmd'),
     path.join(home, '.local', 'bin', 't3.exe'),
   ];
-  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase());
+  // Only types the bridge can launch: PATHEXT may also list scripts like .js or .vbs.
+  const exts = (env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').map((e) => e.toLowerCase()).filter((e) => ['.com', '.exe', '.bat', '.cmd'].includes(e));
   for (const dir of (env.PATH || '').split(';')) {
     const d = dir.trim().replace(/^"(.*)"$/, '$1');
     if (d) candidates.push(...exts.map((ext) => path.join(d, `t3${ext}`)));
@@ -69,7 +70,7 @@ export function mintToken({ label = 'WoW bridge' } = {}) {
   ];
   return new Promise((resolve, reject) => {
     const [file, argv, opts] = t3Command(cli, args);
-    execFile(file, argv, { ...opts, timeout: 120000, windowsHide: true }, (err, stdout, stderr) => {
+    execFile(file, argv, { ...opts, timeout: 120000 }, (err, stdout, stderr) => {
       if (err) return reject(new Error(`t3 auth session issue failed: ${(stderr || err.message).trim()}`));
       const token = stdout.split('\n').map((s) => s.trim()).filter(Boolean).pop();
       if (!token || !tokenClaims(token)) return reject(new Error('t3 auth session issue printed no token'));
@@ -86,11 +87,11 @@ export function mintToken({ label = 'WoW bridge' } = {}) {
 // Node won't run a .cmd shim directly on Windows; it has to go through cmd.exe.
 // Every argument is quoted, and anything cmd would still expand inside quotes is refused.
 export function t3Command(cli, args) {
-  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(cli)) return [cli, args, {}];
+  if (process.platform !== 'win32' || !/\.(cmd|bat)$/i.test(cli)) return [cli, args, { windowsHide: true }];
   const unsafe = [cli, ...args].find((a) => /["%\r\n]/.test(a));
   if (unsafe) throw new Error(`can't pass ${JSON.stringify(unsafe)} to ${path.basename(cli)} safely`);
   const line = [cli, ...args].map((a) => `"${a}"`).join(' ');
-  return [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${line}"`], { windowsVerbatimArguments: true }];
+  return [process.env.ComSpec || 'cmd.exe', ['/d', '/v:off', '/s', '/c', `"${line}"`], { windowsHide: true, windowsVerbatimArguments: true }];
 }
 
 // POSIX modes don't apply on Windows: drop inherited access and grant only the current user.

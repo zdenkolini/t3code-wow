@@ -1,13 +1,16 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { findT3Cli } from '../src/auth.js';
 
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-cli-'));
+after(() => fs.rmSync(root, { recursive: true, force: true }));
+
 // A fake user profile; the lookup is told its platform, environment and home.
 function fakeHome() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-cli-'));
+  return fs.mkdtempSync(path.join(root, 'home-'));
 }
 
 function touch(p) {
@@ -34,7 +37,7 @@ test('T3CODE_HOME moves the T3 home, and the default home is then ignored', () =
   assert.equal(onWindows(home, { T3CODE_HOME: moved }), null);
 });
 
-test('falls back to a .local\bin shim, then t3.exe', () => {
+test('falls back to a .local/bin shim, then t3.exe', () => {
   const home = fakeHome();
   const exe = touch(path.join(home, '.local', 'bin', 't3.exe'));
   assert.equal(onWindows(home), exe);

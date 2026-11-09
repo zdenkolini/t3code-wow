@@ -474,7 +474,7 @@ async function cmdUninstall(args) {
   const t3 = findT3Cli();
   if (claims?.sid && t3) {
     const [file, argv, opts] = t3Command(t3, ['auth', 'session', 'revoke', claims.sid]);
-    const r = spawnSync(file, argv, { ...opts, encoding: 'utf8', timeout: 60000, windowsHide: true });
+    const r = spawnSync(file, argv, { ...opts, encoding: 'utf8', timeout: 60000 });
     if (r.status === 0) done('Revoked the bridge\'s T3 Code session');
     else warn(`Couldn't revoke the bridge's T3 Code session; remove it with \`t3 auth session list\` (${claims.sid}).`);
   }
