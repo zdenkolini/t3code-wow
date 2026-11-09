@@ -1,8 +1,9 @@
 // Files only the current account may read: the T3 session tokens and the strip key.
-// Each is written to a side file that is locked down before the secret goes in, then renamed
+// Each write gets its own side file, locked down before the secret goes in, then renamed
 // over the old one, so a failure part way leaves the old file as it was.
 
 import { execFile, execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -11,7 +12,7 @@ export function writeSecretSync(file, data) {
   const tmp = createSideFile(file);
   try {
     lockDownSync(tmp);
-    fs.writeFileSync(tmp, data);
+    fill(tmp, data);
     fs.renameSync(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
@@ -24,7 +25,7 @@ export async function writeSecret(file, data) {
   const tmp = createSideFile(file);
   try {
     await lockDown(tmp);
-    fs.writeFileSync(tmp, data);
+    fill(tmp, data);
     await replace(tmp, file);
   } catch (e) {
     fs.rmSync(tmp, { force: true });
@@ -32,14 +33,16 @@ export async function writeSecret(file, data) {
   }
 }
 
-// An empty side file, 0600 on Linux and macOS. A side file left by a crash would keep its old
-// mode (the mode only applies to a new file), so it's removed first.
+// An empty side file of this write's own, 0600 on Linux and macOS. It must be new ('wx'): a shared
+// or reused name would let another write swap in a file that isn't locked down yet.
 function createSideFile(file) {
-  const tmp = `${file}.new`;
-  fs.rmSync(tmp, { force: true });
-  fs.writeFileSync(tmp, '', { mode: 0o600 });
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.new`;
+  fs.writeFileSync(tmp, '', { mode: 0o600, flag: 'wx' });
   return tmp;
 }
+
+// Into the locked-down side file only; 'r+' never creates a file with default access.
+const fill = (tmp, data) => fs.writeFileSync(tmp, data, { flag: 'r+' });
 
 // Windows refuses to replace a file someone has open (a virus scan, a CLI reading the token),
 // so give them a moment before giving up.
@@ -56,6 +59,8 @@ async function replace(from, to) {
 
 // POSIX modes don't apply on Windows: drop inherited access and grant only the current account,
 // named by its SID so a renamed account or an odd USERNAME can't point it elsewhere.
+// Until icacls runs, the empty side file has the folder's inherited access; Node can't create a
+// file with its own ACL, so the secret only goes in afterwards.
 function lockDownSync(file) {
   if (process.platform !== 'win32') return;
   try {
