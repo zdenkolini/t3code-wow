@@ -18,3 +18,7 @@ export const anyLua = () => ['lua5.1', 'luajit', 'lua'].find(hasLua);
 export const lua51 = () => ['lua5.1', 'luajit'].find(hasLua) || (/Lua 5\.1/.test(luaVersion('lua') || '') ? 'lua' : undefined);
 
 export const NO_LUA = 'no lua interpreter';
+
+// Lua's output as text. On Windows the C runtime writes stdout in text mode, so each
+// newline Lua prints arrives as CRLF; turn those back into plain newlines.
+export const luaText = (out) => out.toString('utf8').replace(/\r\n/g, '\n');

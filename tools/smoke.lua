@@ -364,6 +364,8 @@ ns.Transport.signals = "ok"
 -- files. Only a fresh snapshot moves the bell position (to the bridge's nextSig).
 local function BellPath(k) return string.format("Interface\\AddOns\\T3Code\\Signals\\%05d.wav", 3991 + (k - 1) % 8) end
 local freshFile = os.tmpname()
+-- On Windows, Lua 5.1's tmpname is a bare "\sXXX." in the drive root, which isn't writable.
+if freshFile:match("^\\") then freshFile = (os.getenv("TEMP") or ".") .. freshFile end
 do
 	local fh = assert(io.open(freshFile, "w"))
 	fh:write(string.format("dofile(%q) T3Code_Inbox.gen = 9e15 T3Code_Inbox.nextSig = 503\n", snapshot))

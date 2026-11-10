@@ -11,7 +11,7 @@ import { markdownToWow, markdownToSpeech } from '../src/format.js';
 import { RS, US } from '../src/codec.js';
 import { seal } from '../src/strip-crypto.js';
 import crypto from 'node:crypto';
-import { lua51, NO_LUA } from './lua.js';
+import { lua51, luaText, NO_LUA } from './lua.js';
 
 const lua = lua51();
 
@@ -224,7 +224,7 @@ test('lua serializer escapes strings and keeps utf-8', { skip: !lua && NO_LUA },
   fs.writeFileSync(file, Buffer.from(`local t = ${s}; io.write(t.a, "|", t.b[1], "|", t["not ident"], "|", t["end"])`, 'latin1'));
   const out = execFileSync(lua, [file]);
   fs.rmSync(file);
-  assert.equal(out.toString('utf8'), 'x"y\\z\n\u0001|é|1|2');
+  assert.equal(luaText(out), 'x"y\\z\n\u0001|é|1|2');
 });
 
 test('markdown formatting', () => {
