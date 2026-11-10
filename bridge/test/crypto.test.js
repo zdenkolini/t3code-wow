@@ -10,7 +10,7 @@ import { deriveKeys, seal, open, loadOrCreateKey, OVERHEAD } from '../src/strip-
 import { decodeImage, renderCells, MAX_PAYLOAD } from '../src/codec.js';
 import { parseFrame } from '../src/bridge.js';
 import { luaAssignment } from '../src/luaser.js';
-import { hasLua, NO_LUA } from './lua.js';
+import { hasLua, luaText, NO_LUA } from './lua.js';
 import { assertOwnerOnly } from './owner-only.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -21,7 +21,7 @@ const LUAS = ['lua5.1', 'luajit'].filter(hasLua);
 function luaCrypto(lua, script) {
   const prelude = `dofile("tools/bitstub.lua") local ns = {} assert(loadfile("addon/T3Code/Core/Crypto.lua"))("T3Code", ns) local C = ns.Crypto
 local function hex(s) return C.ToHex(s) end local function raw(h) return C.FromHex(h) end `;
-  return execFileSync(lua, ['-e', prelude + script], { cwd: root }).toString().trim();
+  return luaText(execFileSync(lua, ['-e', prelude + script], { cwd: root })).trim();
 }
 
 test('strip keys: one per install, kept private', () => {
@@ -72,7 +72,7 @@ for (const lua of LUAS) {
     const slot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-slot-')), 'Inbox.lua');
     fs.writeFileSync(slot, luaAssignment('T3Code_Inbox', { v: 1, gen: 5, now: 1, nextSig: 1, key: keys.hex, threads: [], projects: [], usage: [], bridge: {} }));
     const secret = 'please refactor the payment flow';
-    const [cells, mode] = execFileSync(lua, ['tools/strip_e2e.lua', 'addon/T3Code', slot, 'thread-42', secret], { cwd: root }).toString().trim().split('\n');
+    const [cells, mode] = luaText(execFileSync(lua, ['tools/strip_e2e.lua', 'addon/T3Code', slot, 'thread-42', secret], { cwd: root })).trim().split('\n');
     assert.equal(mode, 'encrypted');
     const frame = decodeImage(renderCells([...cells].map(Number), { cell: 3 }));
     assert.equal(frame.version, 2);
@@ -89,7 +89,7 @@ for (const lua of LUAS) {
   test(`addon strip without keys: a bare hello, no commands (${lua})`, () => {
     const slot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 't3wow-slot-')), 'Inbox.lua');
     fs.writeFileSync(slot, 'T3Code_Inbox = nil\n');
-    const [cells, mode] = execFileSync(lua, ['tools/strip_e2e.lua', 'addon/T3Code', slot, 'thread-42', 'secret'], { cwd: root }).toString().trim().split('\n');
+    const [cells, mode] = luaText(execFileSync(lua, ['tools/strip_e2e.lua', 'addon/T3Code', slot, 'thread-42', 'secret'], { cwd: root })).trim().split('\n');
     assert.equal(mode, 'plain');
     const frame = decodeImage(renderCells([...cells].map(Number), { cell: 3 }));
     assert.equal(frame.version, 1);
